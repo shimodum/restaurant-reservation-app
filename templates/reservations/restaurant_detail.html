@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}{{ restaurant.name }} | 飲食店予約アプリ{% endblock %}
+
+{% block content %}
+<article class="restaurant-detail">
+  <h1>{{ restaurant.name }}</h1>
+
+  <section>
+    <h2>店舗について</h2>
+    <div>{{ restaurant.description|linebreaks }}</div>
+  </section>
+
+  <section>
+    <h2>店舗情報</h2>
+    <dl>
+      <dt>住所</dt>
+      <dd>{{ restaurant.address }}</dd>
+      <dt>営業時間</dt>
+      <dd>{{ restaurant.business_hours|linebreaksbr }}</dd>
+    </dl>
+  </section>
+</article>
+
+<p><a href="{% url 'reservations:restaurant_list' %}">店舗一覧へ戻る</a></p>
+{% endblock %}

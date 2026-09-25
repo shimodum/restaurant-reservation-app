@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}店舗一覧 | 飲食店予約アプリ{% endblock %}
+
+{% block content %}
+<h1>店舗一覧</h1>
+
+{% if restaurants %}
+  <div class="restaurant-grid">
+    {% for restaurant in restaurants %}
+      <article class="restaurant-card">
+        <h2>{{ restaurant.name }}</h2>
+        <dl>
+          <dt>住所</dt>
+          <dd>{{ restaurant.address }}</dd>
+          <dt>営業時間</dt>
+          <dd>{{ restaurant.business_hours|linebreaksbr }}</dd>
+        </dl>
+        <a class="button" href="{% url 'reservations:restaurant_detail' restaurant.pk %}">詳細を見る</a>
+      </article>
+    {% endfor %}
+  </div>
+{% else %}
+  <p class="empty-message">現在、掲載中の店舗はありません。</p>
+{% endif %}
+{% endblock %}
