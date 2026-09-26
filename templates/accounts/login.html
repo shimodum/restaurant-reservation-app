@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}ログイン | 飲食店予約アプリ{% endblock %}
+
+{% block content %}
+<section class="auth-panel">
+  <h1>ログイン</h1>
+  <form class="auth-form" method="post" action="{% url 'accounts:login' %}">
+    {% csrf_token %}
+    {{ form.as_div }}
+    <button class="button" type="submit">ログイン</button>
+  </form>
+  <p>初めての方は<a href="{% url 'accounts:signup' %}">会員登録</a></p>
+</section>
+{% endblock %}

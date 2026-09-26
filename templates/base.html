@@ -14,6 +14,16 @@
       <nav aria-label="メインナビゲーション">
         <a href="{% url 'reservations:restaurant_list' %}">店舗一覧</a>
         <a href="{% url 'admin:index' %}">管理画面</a>
+        {% if user.is_authenticated %}
+          <span class="nav-username">{{ user.username }}</span>
+          <form class="logout-form" method="post" action="{% url 'accounts:logout' %}">
+            {% csrf_token %}
+            <button class="logout-button" type="submit">ログアウト</button>
+          </form>
+        {% else %}
+          <a href="{% url 'accounts:signup' %}">会員登録</a>
+          <a href="{% url 'accounts:login' %}">ログイン</a>
+        {% endif %}
       </nav>
     </div>
   </header>
