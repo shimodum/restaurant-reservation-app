@@ -28,6 +28,8 @@
 
 body {
   margin: 0;
+  font-size: 1.125rem;
+  overflow-wrap: anywhere;
 }
 
 a {
@@ -59,13 +61,27 @@ a {
 }
 
 .site-title {
-  font-size: 1.2rem;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 1.25rem;
   font-weight: 700;
 }
 
 nav {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
   gap: 1rem;
+}
+
+h1 {
+  font-size: 2rem;
+}
+
+h2 {
+  font-size: 1.5rem;
 }
 
 h1,
@@ -83,11 +99,12 @@ h2 {
 
 .restaurant-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
   gap: 1rem;
 }
 
 .restaurant-card {
+  min-width: 0;
   padding: 1.5rem;
   border: 1px solid #ded8d2;
   border-radius: 0.5rem;
@@ -112,6 +129,8 @@ dd {
 
 .button {
   display: inline-block;
+  max-width: 100%;
+  white-space: normal;
   padding: 0.6rem 1rem;
   border-radius: 0.3rem;
   color: #fff;
@@ -119,30 +138,7 @@ dd {
   text-decoration: none;
 }
 
-@media (max-width: 520px) {
-  .header-inner {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .hero,
-  .restaurant-detail,
-  .empty-message {
-    padding: 1.25rem;
-  }
-}
-
 /* 認証画面と共通ヘッダー */
-nav {
-  align-items: center;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.nav-username {
-  overflow-wrap: anywhere;
-}
-
 .logout-form {
   margin: 0;
 }
@@ -182,16 +178,21 @@ button.button {
 
 .auth-form input {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 0.6rem;
   border: 1px solid #877b73;
   border-radius: 0.3rem;
   font: inherit;
 }
 
+.supplementary,
+.auth-form .helptext {
+  font-size: 1rem;
+}
+
 .auth-form .helptext {
   margin-top: 0.3rem;
-  font-size: 0.9rem;
-  overflow-wrap: anywhere;
 }
 
 .auth-form ul {
@@ -203,6 +204,27 @@ button.button {
 }
 
 @media (max-width: 520px) {
+  body {
+    font-size: 1rem;
+  }
+
+  h1 {
+    font-size: 1.75rem;
+  }
+
+  h2 {
+    font-size: 1.25rem;
+  }
+
+  .header-inner {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .hero,
+  .restaurant-detail,
+  .restaurant-card,
+  .empty-message,
   .auth-panel {
     padding: 1.25rem;
   }

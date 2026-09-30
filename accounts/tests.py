@@ -162,6 +162,26 @@ class AccountTests(TestCase):
                         self.assertNotContains(response, reverse("accounts:logout"))
                         self.assertNotContains(response, 'href="/reservations/"')
 
+    def test_admin_navigation_is_visible_only_to_staff(self):
+        staff = User.objects.create_user(username="staff", is_staff=True)
+        urls = [
+            reverse("home"),
+            reverse("reservations:restaurant_list"),
+            reverse("reservations:restaurant_detail", args=[self.restaurant.pk]),
+        ]
+        admin_link = f'<a href="{reverse("admin:index")}">管理画面</a>'
+        for user in (None, self.user, staff):
+            client = Client()
+            if user is not None:
+                client.force_login(user)
+            for url in urls:
+                with self.subTest(user=user, url=url):
+                    response = client.get(url)
+                    if user is not None and user.is_staff:
+                        self.assertContains(response, admin_link, html=True)
+                    else:
+                        self.assertNotContains(response, admin_link, html=True)
+
     def test_csrf_required_for_all_auth_posts(self):
         for action in ("signup", "login", "logout"):
             with self.subTest(action=action):

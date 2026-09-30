@@ -198,6 +198,47 @@ class ReservationTests(TestCase):
         self.assertEqual(set(response.context["form"].errors), {"reserved_at", "party_size"})
         self.assertFalse(Reservation.objects.exists())
 
+    def test_reservation_errors_display_user_friendly_messages(self):
+        cases = [
+            ("party_size", "0", "人数は1人以上を指定してください。"),
+            ("party_size", "11", "人数は10人以下を指定してください。"),
+            ("party_size", "", "人数を入力してください。"),
+            ("reserved_at", "", "予約日時を入力してください。"),
+            ("reserved_at", "2030-01-09T12:00", "予約日時は未来の日時を指定してください。"),
+        ]
+        for field, value, message in cases:
+            with self.subTest(field=field, value=value):
+                response = self.client.post(self.create_url, self.data(**{field: value}))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context["form"].errors[field], [message])
+                self.assertContains(
+                    response,
+                    str(response.context["form"][field].errors),
+                    html=True,
+                )
+                self.assertFalse(Reservation.objects.exists())
+
+    def test_reservation_form_disables_browser_validation_on_get_and_invalid_post(self):
+        responses = [
+            self.client.get(self.create_url),
+            self.client.post(self.create_url, self.data(party_size="0")),
+            self.client.post(self.create_url, self.data(party_size="11")),
+            self.client.post(self.create_url, self.data(reserved_at="", party_size="")),
+        ]
+        for response in responses:
+            with self.subTest(data=response.context["form"].data):
+                self.assertContains(
+                    response,
+                    f'<form class="auth-form" method="post" action="{self.create_url}" novalidate>',
+                )
+                self.assertContains(response, 'min="1"')
+                self.assertContains(response, 'max="10"')
+        empty_form = responses[-1].context["form"]
+        for field in ("reserved_at", "party_size"):
+            self.assertEqual(empty_form.errors.as_data()[field][0].code, "required")
+            self.assertContains(responses[-1], str(empty_form[field].errors), html=True)
+        self.assertFalse(Reservation.objects.exists())
+
     def test_create_get_and_post_ignore_protected_fields(self):
         response = self.client.get(self.create_url)
         self.assertTemplateUsed(response, "reservations/reservation_form.html")

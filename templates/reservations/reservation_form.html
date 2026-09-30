@@ -5,8 +5,8 @@
 {% block content %}
 <section class="auth-panel">
   <h1>{{ restaurant.name }}の予約</h1>
-  <p>予約日時は日本時間で入力してください。人数は1〜10人です。</p>
-  <form class="auth-form" method="post" action="{% url 'reservations:reservation_create' restaurant.pk %}">
+  <p class="supplementary">予約日時は日本時間で入力してください。人数は1〜10人です。</p>
+  <form class="auth-form" method="post" action="{% url 'reservations:reservation_create' restaurant.pk %}" novalidate>
     {% csrf_token %}
     {{ form.as_div }}
     <button class="button" type="submit">予約する</button>
