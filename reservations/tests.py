@@ -198,6 +198,37 @@ class ReservationTests(TestCase):
         self.assertEqual(set(response.context["form"].errors), {"reserved_at", "party_size"})
         self.assertFalse(Reservation.objects.exists())
 
+    def test_reservation_datetime_rejects_invalid_formats_and_dates(self):
+        values = [
+            "2030-01-11T12:00:00",
+            "2030-01-11T12:00:30",
+            "2030-01-11T12:00:00.123",
+            "2030-01-11T12:00Z",
+            "2030-01-11T12:00+09:00",
+            "2030-01-11T12:00-09:00",
+            "9999-12-31T23:59-09:00",
+            "2030-01-11 12:00",
+            "2030-1-11T12:00",
+            "2030-01-11T2:00",
+            " 2030-01-11T12:00",
+            "2030-01-11T12:00 ",
+            "2030-01-11T12:00\n",
+            "２０３０-01-11T12:00",
+            "2030-02-30T12:00",
+            "2030-01-11T24:00",
+        ]
+        message = "予約日時は日本時間でYYYY-MM-DDTHH:MM形式の正しい日時を入力してください。"
+        for value in values:
+            with self.subTest(value=value):
+                response = self.client.post(self.create_url, self.data(reserved_at=value))
+                self.assertEqual(response.status_code, 200)
+                form = response.context["form"]
+                self.assertEqual(form.errors.as_data()["reserved_at"][0].code, "invalid")
+                self.assertEqual(form.errors["reserved_at"], [message])
+                self.assertContains(response, message)
+                self.assertEqual(form.data["reserved_at"], value)
+                self.assertFalse(Reservation.objects.exists())
+
     def test_reservation_errors_display_user_friendly_messages(self):
         cases = [
             ("party_size", "0", "人数は1人以上を指定してください。"),

@@ -103,8 +103,10 @@ erDiagram
   `reservations:reservation_cancel`。既存の店舗URL・URL名は維持する。
 - ReservationFormはModelFormで、入力項目は`reserved_at`・`party_size`だけ。
   日時は`datetime-local`を使用し、`%Y-%m-%dT%H:%M`の分単位で日本時間として入力する。
+  サーバー側でも半角数字・固定桁数の`YYYY-MM-DDTHH:MM`形式を日時変換前に検証し、
+  秒・タイムゾーン・前後の空白を拒否する。形式違反はフォームエラーとして扱う。
 - 未来日時の検証はフォームの`clean_reserved_at()`で行う。人数の範囲はモデルのvalidatorを
-  ModelForm経由で適用する。必須・日時形式・整数の検証は標準フォームを使う。
+  ModelForm経由で適用する。必須・実在する日付と時刻・整数の検証は標準フォームを使う。
   HTMLにも人数のmin・maxを指定するが、サーバー側で必ず検証する。
 - モデルの`save()`はvalidatorを自動実行しない。日時の未来判定をモデルの`clean()`には置かず、
   過去の履歴保持・キャンセルを妨げない。独自saveや追加のDB制約は導入しない。
