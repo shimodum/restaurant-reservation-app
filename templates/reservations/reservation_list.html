@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}自分の予約 | 飲食店予約アプリ{% endblock %}
+
+{% block content %}
+<h1>自分の予約</h1>
+<p>予約日時は日本時間で表示しています。</p>
+{% if reservations %}
+  <div class="restaurant-grid">
+    {% for reservation in reservations %}
+      <article class="restaurant-card">
+        <h2><a href="{% url 'reservations:restaurant_detail' reservation.restaurant.pk %}">{{ reservation.restaurant.name }}</a></h2>
+        <dl>
+          <dt>予約日時</dt>
+          <dd>{{ reservation.reserved_at|date:"Y年n月j日 H:i" }}</dd>
+          <dt>人数</dt>
+          <dd>{{ reservation.party_size }}人</dd>
+          <dt>状態</dt>
+          <dd>{{ reservation.get_status_display }}</dd>
+        </dl>
+        {% if reservation.can_cancel %}
+          <form method="post" action="{% url 'reservations:reservation_cancel' reservation.pk %}">
+            {% csrf_token %}
+            <button class="button" type="submit">予約をキャンセルする</button>
+          </form>
+        {% endif %}
+      </article>
+    {% endfor %}
+  </div>
+{% else %}
+  <p class="empty-message">予約はまだありません。</p>
+{% endif %}
+<p><a href="{% url 'reservations:restaurant_list' %}">店舗一覧へ</a></p>
+{% endblock %}

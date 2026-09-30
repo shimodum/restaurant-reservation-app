@@ -5,6 +5,23 @@
   line-height: 1.6;
 }
 
+.messages {
+  padding: 0;
+  list-style: none;
+}
+
+.message {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  border: 1px solid #ded8d2;
+  border-radius: 0.3rem;
+  background: #fff;
+}
+
+.message.error {
+  color: #a32216;
+}
+
 * {
   box-sizing: border-box;
 }

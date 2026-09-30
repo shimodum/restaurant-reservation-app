@@ -152,6 +152,7 @@ class AccountTests(TestCase):
                         self.assertContains(response, self.restaurant.name)
                     if authenticated:
                         self.assertContains(response, self.user.username)
+                        self.assertContains(response, '<a href="/reservations/">自分の予約</a>', html=True)
                         self.assertContains(response, reverse("accounts:logout"))
                         self.assertNotContains(response, reverse("accounts:signup"))
                         self.assertNotContains(response, reverse("accounts:login"))
@@ -159,6 +160,7 @@ class AccountTests(TestCase):
                         self.assertContains(response, reverse("accounts:signup"))
                         self.assertContains(response, reverse("accounts:login"))
                         self.assertNotContains(response, reverse("accounts:logout"))
+                        self.assertNotContains(response, 'href="/reservations/"')
 
     def test_csrf_required_for_all_auth_posts(self):
         for action in ("signup", "login", "logout"):
