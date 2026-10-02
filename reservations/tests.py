@@ -1,11 +1,15 @@
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
+from itertools import product
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+from django.core.exceptions import ValidationError
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.db.models.deletion import ProtectedError
-from django.test import Client, TestCase
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -21,6 +25,62 @@ class RestaurantModelTests(TestCase):
         self.assertEqual(str(restaurant), "サンプル食堂")
 
 
+    def restaurant(self, **overrides):
+        data = dict(name="設定食堂", description="説明", address="東京都", business_hours="L.O. 21:30")
+        data.update(overrides)
+        return Restaurant(**data)
+
+    def test_booking_defaults_and_valid_settings(self):
+        restaurant = self.restaurant()
+        restaurant.full_clean()
+        self.assertEqual(restaurant.max_party_size, 10)
+        self.assertFalse(restaurant.can_accept_reservations)
+        for size in (1, 20, 32767):
+            restaurant = self.restaurant(opening_time=time(11), last_reservation_time=time(21),
+                                         closing_time=time(22), max_party_size=size)
+            restaurant.full_clean()
+            self.assertTrue(restaurant.can_accept_reservations)
+
+    def test_zero_maximum_blocks_acceptance_without_hours_error(self):
+        restaurant = self.restaurant(opening_time=time(11), last_reservation_time=time(21),
+                                     closing_time=time(22), max_party_size=0)
+        self.assertFalse(restaurant.can_accept_reservations)
+        with self.assertRaises(ValidationError) as caught:
+            restaurant.full_clean()
+        self.assertEqual(set(caught.exception.message_dict), {"max_party_size"})
+
+    def test_partial_hours_are_invalid(self):
+        for present in product((False, True), repeat=3):
+            if all(present) or not any(present):
+                continue
+            with self.subTest(present=present):
+                values = [value if exists else None for value, exists in zip(
+                    (time(11), time(21), time(22)), present)]
+                restaurant = self.restaurant(opening_time=values[0], last_reservation_time=values[1],
+                                             closing_time=values[2])
+                with self.assertRaises(ValidationError):
+                    restaurant.full_clean()
+                self.assertFalse(restaurant.can_accept_reservations)
+
+    def test_invalid_order_precision_and_maximum(self):
+        for opening, last, closing in (
+            (time(11), time(11), time(22)), (time(11), time(22), time(22)),
+            (time(12), time(11), time(22)), (time(11), time(23), time(22)),
+            (time(23), time(0), time(1)), (time(11, 0, 1), time(21), time(22)),
+            (time(11), time(21, 0, 1), time(22)), (time(11), time(21), time(22, 0, 1)),
+            (time(11), time(21, 0, 0, 1), time(22)),
+        ):
+            with self.subTest(times=(opening, last, closing)):
+                restaurant = self.restaurant(opening_time=opening, last_reservation_time=last,
+                                             closing_time=closing)
+                with self.assertRaises(ValidationError):
+                    restaurant.full_clean()
+                self.assertFalse(restaurant.can_accept_reservations)
+        for size in (0, -1, 32768):
+            with self.subTest(size=size), self.assertRaises(ValidationError):
+                self.restaurant(max_party_size=size).full_clean()
+
+
 class RestaurantViewTests(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -29,12 +89,14 @@ class RestaurantViewTests(TestCase):
             description="家庭料理のお店です。",
             address="東京都渋谷区1-1-1",
             business_hours="11:00〜20:00",
+            opening_time=time(11), last_reservation_time=time(19), closing_time=time(20),
         )
         cls.second_restaurant = Restaurant.objects.create(
             name="次のレストラン",
             description="1行目\n2行目",
             address="東京都新宿区2-2-2",
             business_hours="平日 17:00〜22:00\n土日 12:00〜22:00",
+            opening_time=time(11), last_reservation_time=time(21), closing_time=time(22),
         )
 
     def test_restaurant_list_displays_restaurants_in_registration_order(self):
@@ -86,6 +148,27 @@ class RestaurantViewTests(TestCase):
         self.assertContains(response, reverse("reservations:restaurant_list"))
 
 
+    def test_booking_information_and_unconfigured_notice(self):
+        for url in (reverse("reservations:restaurant_list"),
+                    reverse("reservations:restaurant_detail", args=[self.second_restaurant.pk])):
+            response = self.client.get(url)
+            self.assertContains(response, "11:00〜22:00")
+            self.assertContains(response, "最終予約可能時刻")
+            self.assertContains(response, "21:00")
+            self.assertContains(response, "1予約あたり10人まで")
+            self.assertContains(response, "営業時間の補足案内")
+        self.second_restaurant.opening_time = None
+        self.second_restaurant.last_reservation_time = None
+        self.second_restaurant.closing_time = None
+        self.second_restaurant.save()
+        detail = reverse("reservations:restaurant_detail", args=[self.second_restaurant.pk])
+        response = self.client.get(detail)
+        self.assertContains(response, "店舗の予約設定が未完了または不正のため、現在予約を受け付けていません。")
+        self.assertNotContains(response, reverse("reservations:reservation_create", args=[self.second_restaurant.pk]))
+        self.assertContains(self.client.get(reverse("reservations:restaurant_list")),
+                            "店舗の予約設定が未完了または不正のため、現在予約を受け付けていません。")
+
+
 class RestaurantAdminTests(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -101,7 +184,8 @@ class RestaurantAdminTests(TestCase):
         self.assertIsInstance(model_admin, RestaurantAdmin)
         self.assertEqual(
             model_admin.list_display,
-            ("name", "address", "business_hours"),
+            ("name", "address", "opening_time", "last_reservation_time",
+             "closing_time", "max_party_size", "business_hours"),
         )
         self.assertEqual(model_admin.search_fields, ("name", "address"))
 
@@ -117,6 +201,37 @@ class RestaurantAdminTests(TestCase):
         self.assertEqual(add_response.status_code, 200)
 
 
+    def test_admin_saves_rules_and_rejects_invalid_settings(self):
+        self.client.force_login(self.superuser)
+        url = reverse("admin:reservations_restaurant_add")
+        data = dict(name="管理食堂", description="説明", address="東京都", business_hours="L.O. 21:30",
+                    opening_time="11:00", last_reservation_time="21:00", closing_time="22:00",
+                    max_party_size="20", _save="保存")
+        response = self.client.get(url)
+        for field in ("opening_time", "last_reservation_time", "closing_time", "max_party_size"):
+            self.assertContains(response, f'name="{field}"')
+        for overrides in (dict(last_reservation_time="22:00"), dict(opening_time=""),
+                          dict(max_party_size="0"), dict(max_party_size="32768")):
+            with self.subTest(overrides=overrides):
+                response = self.client.post(url, {**data, **overrides})
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.context["adminform"].form.errors)
+                self.assertFalse(Restaurant.objects.exists())
+        self.assertEqual(self.client.post(url, data).status_code, 302)
+        restaurant = Restaurant.objects.get()
+        self.assertEqual(restaurant.last_reservation_time, time(21))
+        self.assertEqual(restaurant.max_party_size, 20)
+        change = reverse("admin:reservations_restaurant_change", args=[restaurant.pk])
+        self.assertEqual(self.client.post(change, {**data, "last_reservation_time": "20:30"}).status_code, 302)
+        restaurant.refresh_from_db()
+        self.assertEqual(restaurant.last_reservation_time, time(20, 30))
+        self.assertContains(self.client.get(reverse("admin:reservations_restaurant_changelist")), "20:30")
+        self.assertEqual(self.client.post(change, {**data, "opening_time": "", "last_reservation_time": "",
+                                                "closing_time": ""}).status_code, 302)
+        restaurant.refresh_from_db()
+        self.assertFalse(restaurant.can_accept_reservations)
+
+
 class ReservationTests(TestCase):
     # 予約日時の境界は固定時刻で検証する。
     now = datetime(2030, 1, 10, 12, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
@@ -126,10 +241,12 @@ class ReservationTests(TestCase):
         cls.user = get_user_model().objects.create_user(username="member")
         cls.other = get_user_model().objects.create_user(username="other")
         cls.restaurant = Restaurant.objects.create(
-            name="予約食堂", description="説明", address="東京都", business_hours="11〜20時"
+            name="予約食堂", description="説明", address="東京都", business_hours="L.O. 19:30",
+            opening_time=time(11), last_reservation_time=time(19), closing_time=time(20),
         )
         cls.other_restaurant = Restaurant.objects.create(
-            name="別の食堂", description="説明", address="大阪府", business_hours="11〜20時"
+            name="別の食堂", description="説明", address="大阪府", business_hours="L.O. 19:30",
+            opening_time=time(11), last_reservation_time=time(19), closing_time=time(20),
         )
 
     def setUp(self):
@@ -173,10 +290,10 @@ class ReservationTests(TestCase):
         self.assertEqual(reservation.get_status_display(), "キャンセル済み")
 
     def test_form_fields_and_valid_boundaries(self):
-        self.assertEqual(list(ReservationForm().fields), ["reserved_at", "party_size"])
+        self.assertEqual(list(ReservationForm(restaurant=self.restaurant).fields), ["reserved_at", "party_size"])
         for size in (1, 10):
             with self.subTest(size=size):
-                form = ReservationForm(self.data(party_size=size))
+                form = ReservationForm(self.data(party_size=size), restaurant=self.restaurant)
                 self.assertTrue(form.is_valid(), form.errors)
                 self.assertEqual(form.cleaned_data["party_size"], size)
                 self.assertEqual(form.cleaned_data["reserved_at"], self.now + timedelta(days=1))
@@ -408,3 +525,178 @@ class ReservationTests(TestCase):
         self.assertContains(response, "ログインして予約する")
         self.assertContains(response, "店舗一覧からこの店舗を選び直して")
         self.assertNotContains(response, f'href="{self.list_url}"')
+
+    def test_reservation_time_boundaries_and_japan_timezone(self):
+        self.restaurant.last_reservation_time = time(21)
+        self.restaurant.closing_time = time(22)
+        self.restaurant.save()
+        for value, allowed in (("10:59", False), ("11:00", True), ("20:59", True),
+                               ("21:00", True), ("21:01", False), ("21:59", False), ("22:00", False)):
+            with self.subTest(time=value):
+                before = Reservation.objects.count()
+                response = self.client.post(self.create_url, self.data(reserved_at=f"2030-01-11T{value}"))
+                if allowed:
+                    self.assertRedirects(response, self.list_url)
+                    reservation = Reservation.objects.latest("pk")
+                    self.assertEqual(timezone.localtime(reservation.reserved_at).strftime("%H:%M"), value)
+                    self.assertEqual(reservation.reserved_at.utcoffset(), timedelta(0))
+                else:
+                    self.assertEqual(response.status_code, 200)
+                    self.assertIn("reserved_at", response.context["form"].errors)
+                    self.assertContains(response, "11:00以上、21:00以下")
+                self.assertEqual(Reservation.objects.count(), before + int(allowed))
+
+    @override_settings(TIME_ZONE="UTC")
+    def test_reservation_hours_follow_default_timezone_setting(self):
+        form = ReservationForm(self.data(reserved_at="2030-01-11T11:00"),
+                               restaurant=self.restaurant)
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["reserved_at"].utcoffset(), timedelta(0))
+        form = ReservationForm(self.data(reserved_at="2030-01-11T10:59"),
+                               restaurant=self.restaurant)
+        self.assertFalse(form.is_valid())
+        self.assertIn("reserved_at", form.errors)
+
+    def test_reservation_hours_use_default_instead_of_active_timezone(self):
+        with timezone.override("UTC"):
+            # 入力の解釈は現在有効なタイムゾーン、営業時間の判定は設定の日本時間。
+            form = ReservationForm(self.data(reserved_at="2030-01-11T02:00"),
+                                   restaurant=self.restaurant)
+            self.assertTrue(form.is_valid(), form.errors)
+            form = ReservationForm(self.data(reserved_at="2030-01-11T01:59"),
+                                   restaurant=self.restaurant)
+            self.assertFalse(form.is_valid())
+            self.assertIn("reserved_at", form.errors)
+
+    def test_zero_maximum_in_database_blocks_get_and_post(self):
+        Restaurant.objects.filter(pk=self.restaurant.pk).update(max_party_size=0)
+        self.restaurant.refresh_from_db()
+        self.assertFalse(self.restaurant.can_accept_reservations)
+        notice = "店舗の予約設定が未完了または不正のため、現在予約を受け付けていません。"
+        detail_url = reverse("reservations:restaurant_detail", args=[self.restaurant.pk])
+        for url in (reverse("reservations:restaurant_list"), detail_url):
+            response = self.client.get(url)
+            self.assertContains(response, notice)
+            self.assertNotContains(response, self.create_url)
+        for response in (self.client.get(self.create_url),
+                         self.client.post(self.create_url, self.data(party_size=1))):
+            self.assertContains(response, notice)
+            self.assertNotContains(response, "人数は1〜0人")
+            self.assertNotContains(response, 'name="reserved_at"')
+            self.assertNotContains(response, 'name="party_size"')
+        self.assertIn(notice, response.context["form"].non_field_errors())
+        self.assertFalse(Reservation.objects.exists())
+
+    def test_party_size_uses_restaurant_limit_and_dynamic_display(self):
+        for maximum, sizes in ((20, ((1, True), (20, True), (21, False))),
+                               (1, ((1, True), (2, False)))):
+            self.restaurant.max_party_size = maximum
+            self.restaurant.save()
+            response = self.client.get(self.create_url)
+            self.assertContains(response, f'max="{maximum}"')
+            self.assertContains(response, f"人数は1〜{maximum}人")
+            for size, allowed in sizes:
+                with self.subTest(maximum=maximum, size=size):
+                    before = Reservation.objects.count()
+                    response = self.client.post(self.create_url, self.data(party_size=size))
+                    if allowed:
+                        self.assertRedirects(response, self.list_url)
+                        self.assertEqual(Reservation.objects.latest("pk").party_size, size)
+                    else:
+                        self.assertContains(response, f"人数は{maximum}人以下を指定してください。")
+                        self.assertContains(response, f'max="{maximum}"')
+                        self.assertEqual(response.context["form"].data["party_size"], str(size))
+                    self.assertEqual(Reservation.objects.count(), before + int(allowed))
+
+    def test_post_cannot_override_restaurant_rules(self):
+        self.other_restaurant.max_party_size = 20
+        self.other_restaurant.last_reservation_time = time(21)
+        self.other_restaurant.closing_time = time(22)
+        self.other_restaurant.save()
+        forged = self.data(reserved_at="2030-01-11T21:00", party_size="20",
+                           restaurant=self.other_restaurant.pk, opening_time="00:00",
+                           last_reservation_time="23:59", closing_time="23:59", max_party_size="20")
+        response = self.client.post(self.create_url, forged)
+        self.assertEqual(set(response.context["form"].errors), {"reserved_at", "party_size"})
+        self.assertFalse(Reservation.objects.exists())
+        other_url = reverse("reservations:reservation_create", args=[self.other_restaurant.pk])
+        self.assertRedirects(self.client.post(other_url, forged), self.list_url)
+        self.assertEqual(Reservation.objects.get().restaurant, self.other_restaurant)
+
+    def test_unconfigured_or_invalid_restaurant_blocks_get_and_post(self):
+        for opening, last, closing in ((None, None, None), (time(11), None, time(22)),
+                                       (time(11), time(22), time(22))):
+            with self.subTest(times=(opening, last, closing)):
+                self.restaurant.opening_time = opening
+                self.restaurant.last_reservation_time = last
+                self.restaurant.closing_time = closing
+                self.restaurant.save()
+                for response in (self.client.get(self.create_url),
+                                 self.client.post(self.create_url, self.data())):
+                    self.assertEqual(response.status_code, 200)
+                    self.assertContains(response, "店舗の予約設定が未完了または不正のため、現在予約を受け付けていません。")
+                    self.assertNotContains(response, 'name="reserved_at"')
+                self.assertTrue(response.context["form"].non_field_errors())
+                self.assertFalse(Reservation.objects.exists())
+
+    def test_last_order_note_does_not_control_reservations(self):
+        for note in ("L.O. 11:30", "L.O. 23:00", "曜日別の案内\n任意の補足"):
+            with self.subTest(note=note):
+                self.restaurant.business_hours = note
+                self.restaurant.save()
+                self.assertRedirects(self.client.post(self.create_url, self.data(reserved_at="2030-01-11T19:00")),
+                                     self.list_url)
+                before = Reservation.objects.count()
+                response = self.client.post(self.create_url, self.data(reserved_at="2030-01-11T19:01"))
+                self.assertIn("reserved_at", response.context["form"].errors)
+                self.assertEqual(Reservation.objects.count(), before)
+
+    def test_settings_changes_preserve_existing_reservation_and_cancellation(self):
+        reservation = self.reserve(party_size=10)
+        original = (reservation.reserved_at, reservation.party_size, reservation.created_at)
+        self.restaurant.opening_time = time(15)
+        self.restaurant.last_reservation_time = time(16)
+        self.restaurant.closing_time = time(17)
+        self.restaurant.max_party_size = 1
+        self.restaurant.save()
+        self.assertContains(self.client.get(self.list_url), "10人")
+        self.assertRedirects(self.client.post(self.cancel_url(reservation)), self.list_url)
+        reservation.refresh_from_db()
+        self.assertEqual(reservation.status, Reservation.Status.CANCELLED)
+        self.assertEqual((reservation.reserved_at, reservation.party_size, reservation.created_at), original)
+
+
+class BookingRulesMigrationTests(TransactionTestCase):
+    def test_existing_restaurant_and_reservation_are_preserved(self):
+        # Migrationの巻き戻しはDjangoが作成した専用テストDBだけで行う。
+        previous = [("reservations", "0002_reservation")]
+        executor = MigrationExecutor(connection)
+        latest = executor.loader.graph.leaf_nodes()
+        try:
+            executor.migrate(previous)
+            old_apps = executor.loader.project_state(previous).apps
+            User = old_apps.get_model("auth", "User")
+            OldRestaurant = old_apps.get_model("reservations", "Restaurant")
+            OldReservation = old_apps.get_model("reservations", "Reservation")
+            user = User.objects.create(username="migration-member")
+            restaurant = OldRestaurant.objects.create(name="既存食堂", description="既存説明",
+                                                     address="東京都", business_hours="L.O. 21:30\n補足")
+            reservation = OldReservation.objects.create(user=user, restaurant=restaurant,
+                reserved_at=datetime(2030, 1, 11, 12, tzinfo=ZoneInfo("Asia/Tokyo")), party_size=10)
+            OldReservation.objects.create(user=user, restaurant=restaurant,
+                reserved_at=datetime(2020, 1, 11, 12, tzinfo=ZoneInfo("Asia/Tokyo")),
+                party_size=2, status="cancelled")
+            old_restaurants = list(OldRestaurant.objects.values("id", "name", "description", "address", "business_hours"))
+            old_reservations = list(OldReservation.objects.values())
+            executor = MigrationExecutor(connection)
+            executor.migrate(latest)
+            self.assertEqual(list(Restaurant.objects.values("id", "name", "description", "address", "business_hours")), old_restaurants)
+            migrated = Restaurant.objects.get(pk=restaurant.pk)
+            self.assertIsNone(migrated.opening_time)
+            self.assertIsNone(migrated.last_reservation_time)
+            self.assertIsNone(migrated.closing_time)
+            self.assertEqual(migrated.max_party_size, 10)
+            self.assertEqual(list(Reservation.objects.values()), old_reservations)
+            self.assertEqual(Reservation.objects.get(pk=reservation.pk).restaurant_id, restaurant.pk)
+        finally:
+            MigrationExecutor(connection).migrate(latest)

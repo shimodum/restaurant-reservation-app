@@ -17,16 +17,27 @@
       <dt>住所</dt>
       <dd>{{ restaurant.address }}</dd>
       <dt>営業時間</dt>
+      <dd>{% if restaurant.opening_time and restaurant.closing_time %}{{ restaurant.opening_time|time:"H:i" }}〜{{ restaurant.closing_time|time:"H:i" }}{% else %}未設定{% endif %}</dd>
+      <dt>最終予約可能時刻</dt>
+      <dd>{{ restaurant.last_reservation_time|time:"H:i"|default:"未設定" }}</dd>
+      <dt>最大予約人数</dt>
+      <dd>1予約あたり{{ restaurant.max_party_size }}人まで</dd>
+      <dt>営業時間の補足案内</dt>
       <dd>{{ restaurant.business_hours|linebreaksbr }}</dd>
     </dl>
   </section>
 </article>
 
+{% if restaurant.can_accept_reservations %}
 <p>
   <a class="button" href="{% url 'reservations:reservation_create' restaurant.pk %}">{% if user.is_authenticated %}予約する{% else %}ログインして予約する{% endif %}</a>
 </p>
 {% if not user.is_authenticated %}
   <p class="supplementary">ログイン後はホームへ移動します。店舗一覧からこの店舗を選び直して予約してください。</p>
+{% endif %}
+
+{% else %}
+  <p>店舗の予約設定が未完了または不正のため、現在予約を受け付けていません。</p>
 {% endif %}
 
 <p><a href="{% url 'reservations:restaurant_list' %}">店舗一覧へ戻る</a></p>

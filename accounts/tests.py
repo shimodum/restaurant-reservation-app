@@ -1,3 +1,5 @@
+from datetime import time
+
 from django.contrib.auth.models import User
 from django.test import Client, TestCase
 from django.urls import reverse
@@ -16,6 +18,7 @@ class AccountTests(TestCase):
             description="家庭料理",
             address="東京都",
             business_hours="11:00〜20:00",
+            opening_time=time(11), last_reservation_time=time(19), closing_time=time(20),
         )
 
     def signup_data(self, **overrides):

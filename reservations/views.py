@@ -29,7 +29,9 @@ def restaurant_detail(request, pk):
 @require_http_methods(["GET", "POST"])
 def reservation_create(request, pk):
     restaurant = get_object_or_404(Restaurant, pk=pk)
-    form = ReservationForm(request.POST if request.method == "POST" else None)
+    form = ReservationForm(
+        request.POST if request.method == "POST" else None, restaurant=restaurant
+    )
     if request.method == "POST" and form.is_valid():
         reservation = form.save(commit=False)
         reservation.user = request.user

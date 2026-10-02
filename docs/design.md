@@ -22,7 +22,7 @@ Django標準のモデル・フォーム・テンプレート・認証・管理�
 
 検索、レビュー、お気に入り、決済、メール通知、店舗オーナー権限、ページネーション、
 Reservationの管理画面機能はMVP対象外。API / Django REST Framework、JavaScriptによる非同期処理、
-本格的なデザイン変更、ファビコン、デプロイも含めない。APIはMVP完成後の追加学習として検討する。
+本格的なデザイン変更、ファビコン、デプロイも含めない。APIは予約ルール改善完了後の別フェーズとする。
 認証は標準Userと認証ビューを使い、会員登録にはUserCreationFormを使う。
 登録項目はユーザー名・パスワード・確認用パスワードとする。
 登録成功後はログイン画面へ移動し、自動ログインはしない。
@@ -38,7 +38,7 @@ Django標準機能で制御し、リンクの表示制御とは区別する。
 | モデル | 主な項目 |
 | --- | --- |
 | User（Django標準） | ユーザー名、パスワードなど |
-| Restaurant | 店名、説明、住所、営業時間の案内文 |
+| Restaurant | 店名、説明、住所、開店時刻、最終予約可能時刻、閉店時刻、最大予約人数、営業時間の補足案内 |
 | Reservation | 利用者（外部キー）、店舗（外部キー）、予約日時、人数、状態、作成日時 |
 
 UserとRestaurantそれぞれに対し、Reservationは多対一。
@@ -64,6 +64,28 @@ erDiagram
 1人のUserと1つのRestaurantはそれぞれ0件以上のReservationを持ち、
 各Reservationは必ず1人のUserと1つのRestaurantに属します。
 
+### Restaurantの予約設定
+
+| フィールド | 定義 |
+| --- | --- |
+| opening_time | TimeField、null=True・blank=True、開店時刻 |
+| last_reservation_time | TimeField、null=True・blank=True、最終予約可能時刻 |
+| closing_time | TimeField、null=True・blank=True、閉店時刻 |
+| max_party_size | PositiveSmallIntegerField、default=10、1〜32767のvalidator |
+| business_hours | 既存TextFieldを維持。L.O.などの補足案内専用 |
+
+時刻は日本時間・分単位。Restaurant.clean()で、3項目すべて未設定、または
+3項目すべて設定かつ`opening_time < last_reservation_time < closing_time`を許可する。
+一部未設定、同時刻、順序逆転、日跨ぎ、秒・マイクロ秒付きの時刻は拒否する。
+`can_accept_reservations`は3時刻の設定・精度・順序と最大予約人数が1以上であることを判定し、フォームと画面で使用する。
+最大人数の32767は、DjangoのPositiveSmallIntegerFieldでサポート対象DBに共通して扱える範囲に合わせた、アプリケーションの検証上限である。
+MySQLのSMALLINT UNSIGNED自体の最大値や、業務上の人数上限を示すものではない。
+管理画面では4項目を編集・一覧表示でき、標準ModelForm経由で検証する。
+
+`0003_restaurant_booking_rules`で既存店舗の3時刻をNULL、最大人数を10として追加する。
+補足案内や予約履歴は変更せず、自由記述からの自動解析も行わない。
+既存Migrationは変更しない。管理者が3時刻を設定した店舗から新規予約受付を再開する。
+
 ### Reservationのフィールド
 
 | フィールド | 定義 |
@@ -72,7 +94,7 @@ erDiagram
 | user | settings.AUTH_USER_MODELへのForeignKey、PROTECT、related_name="reservations" |
 | restaurant | RestaurantへのForeignKey、PROTECT、related_name="reservations" |
 | reserved_at | DateTimeField、予約日時 |
-| party_size | PositiveSmallIntegerField、MinValueValidator(1)・MaxValueValidator(10) |
+| party_size | PositiveSmallIntegerField、MinValueValidator(1)、店舗別上限は予約作成フォームで検証 |
 | status | CharField(max_length=10)、TextChoices、初期値confirmed |
 | created_at | DateTimeField(auto_now_add=True) |
 
@@ -86,14 +108,19 @@ erDiagram
 ## 予約ルール
 
 - ログインした利用者だけが予約できる。
-- 日時は未来、人数は1〜10名とする。
+- 日時は未来、人数は1〜店舗のmax_party_sizeとする。
+- 日本時間の予約時刻は`opening_time <= 予約時刻 <= last_reservation_time`とする。
+  開店時刻と最終予約可能時刻ちょうどの予約は可能。閉店時刻は受付の上限に使わない。
+- 3時刻が未設定・不正な店舗は新規予約を受け付けない。
+- business_hoursのL.O.などの記述は予約可否の判定に使用しない。
+- 設定変更後も既存予約の一覧・キャンセル・履歴は維持する。自動取消や再検証はしない。
 - 閲覧・キャンセル対象は必ずログイン中の利用者で絞る。
 - キャンセルできるのは開始前の予約済み予約のみ。
 - 作成・キャンセルにはPOSTとDjangoのCSRF保護を使う。
 - 日本時間で入力・表示し、Djangoのタイムゾーン対応を使う。
 
 このMVPは予約情報の登録を目的とする。席数、予約枠、重複・満席判定、
-営業時間による受付制限は扱わない。実店舗で空席を保証する運用には、
+曜日別営業時間、定休日、日をまたぐ営業時間、二部制、滞在時間は扱わない。実店舗で空席を保証する運用には、
 これらのルール設計と同時予約への対策が別途必要。
 
 ## フォーム・View・画面
@@ -105,8 +132,10 @@ erDiagram
   日時は`datetime-local`を使用し、`%Y-%m-%dT%H:%M`の分単位で日本時間として入力する。
   サーバー側でも半角数字・固定桁数の`YYYY-MM-DDTHH:MM`形式を日時変換前に検証し、
   秒・タイムゾーン・前後の空白を拒否する。形式違反はフォームエラーとして扱う。
-- 未来日時の検証はフォームの`clean_reserved_at()`で行う。人数の範囲はモデルのvalidatorを
-  ModelForm経由で適用する。必須・実在する日付と時刻・整数の検証は標準フォームを使う。
+- ReservationFormは必須キーワード引数restaurantでURLの対象店舗を受け取る。
+  clean_reserved_at()で未来日時と日本時間の予約可能時間を、clean_party_size()で店舗別上限を検証する。
+  clean()で不正・未設定の店舗を拒否する。人数1以上はモデルvalidatorをModelForm経由で適用する。
+  必須・実在する日付と時刻・整数の検証は標準フォームを使う。
   HTMLにも人数のmin・maxを指定するが、サーバー側で必ず検証する。
 - モデルの`save()`はvalidatorを自動実行しない。日時の未来判定をモデルの`clean()`には置かず、
   過去の履歴保持・キャンセルを妨げない。独自saveや追加のDB制約は導入しない。
@@ -119,6 +148,10 @@ erDiagram
   更新せず理由を案内する。ログイン済みのGETによるキャンセルは405。
 - 作成成功・キャンセル処理後は一覧へリダイレクトし、Django messagesで結果を表示する。
   入力エラー時はフォームの値とエラーを再表示する。
+- 店舗一覧・詳細に開店〜閉店、最終予約可能時刻、最大人数、補足案内を表示する。
+  予約画面には両端を含む受付時間・閉店時刻・人数範囲を表示する。
+  未設定・不正な店舗は受付停止の案内を表示し、詳細の予約リンクと予約画面の入力フォームを非表示にする。
+  直接POSTも拒否する。
 - 店舗詳細から予約フォームへ進み、共通ヘッダーから自分の予約一覧へ進む。
   未ログイン時はログインへ誘導するが、ログイン後はホームへ戻り、店舗を選び直す。
 - 予約一覧に店舗名・日本時間の日時・人数・日本語の状態を表示する。
@@ -139,10 +172,15 @@ PCで1.125rem、520px以下で1remとし、行間は1.6を使う。
 
 ## テスト
 
-固定時刻で未来・現在・過去の境界を検証する。人数1・10の正常系と範囲外・不正入力、
+固定時刻で未来・現在・過去の境界を検証する。店舗別人数1・10・20の境界と範囲外・不正入力、
 本人限定の一覧・キャンセル、POST値の改ざん、GETで変更されないこと、履歴の保持・削除保護、
 並び順・日本時間表示・導線を自動テストする。CSRFは`Client(enforce_csrf_checks=True)`で
 トークンなしの拒否と有効なトークンの成功を確認する。既存店舗・認証テストも維持する。
+開店11:00・最終予約21:00・閉店22:00の場合、10:59拒否、11:00成功、20:59成功、
+21:00成功、21:01・21:59・22:00拒否を検証する。設定整合性、未設定受付停止、店舗別判定、
+L.O.が判定に影響しないこと、設定変更後の履歴・キャンセルも確認する。
+MigrationExecutorとTransactionTestCaseで専用テストDB内の旧データを移行し、
+3時刻NULL・最大人数10と従来の全項目・予約履歴の保持を確認する。専用基盤は追加しない。
 管理画面リンクは未ログイン・一般ユーザーに非表示、staffに表示されることを確認する。
 Templateのautoescape無効化や不必要なsafeがないことは静的に確認し、標準autoescape自体の
 再検証テストは追加しない。実行コマンドと検証結果はREADMEを参照する。
@@ -159,3 +197,8 @@ Templateのautoescape無効化や不必要なsafeがないことは静的に確�
 4. 予約モデル、予約作成、本人の予約一覧・キャンセル（実装済み）。
 5. 権限、入力検証、予約操作のテスト（実装済み）。
 6. UIの可読性・導線調整、管理画面リンクのテスト、第三者向けドキュメント整備（実装済み、最終目視確認は別途実施）。
+7. 店舗別の予約可能時間・最大人数、既存データを保持するMigration、回帰テスト（実装済み）。
+
+店舗設定は作成リクエストで取得した値を使用する。設定変更との厳密な同時実行制御や
+サービス層は追加しない。モデルsave()は検証を自動実行しないため、将来のAPIなど
+別の作成経路を追加する際は、予約ルールの検証方法を別途設計する。

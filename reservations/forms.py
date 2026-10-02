@@ -38,17 +38,42 @@ class ReservationForm(forms.ModelForm):
             "party_size": {
                 "required": "人数を入力してください。",
                 "min_value": "人数は1人以上を指定してください。",
-                "max_value": "人数は10人以下を指定してください。",
             },
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, restaurant, **kwargs):
+        self.restaurant = restaurant
         super().__init__(*args, **kwargs)
         # PositiveSmallIntegerFieldが設定するmin=0を、予約人数の下限に合わせる。
-        self.fields["party_size"].widget.attrs.update({"min": 1, "max": 10})
+        self.fields["party_size"].widget.attrs.update(
+            {"min": 1, "max": restaurant.max_party_size}
+        )
 
     def clean_reserved_at(self):
         reserved_at = self.cleaned_data["reserved_at"]
         if reserved_at <= timezone.now():
             raise forms.ValidationError("予約日時は未来の日時を指定してください。")
+        if self.restaurant.can_accept_reservations:
+            reserved_time = timezone.localtime(reserved_at, timezone.get_default_timezone()).time()
+            if not self.restaurant.opening_time <= reserved_time <= self.restaurant.last_reservation_time:
+                opening = self.restaurant.opening_time.strftime("%H:%M")
+                last = self.restaurant.last_reservation_time.strftime("%H:%M")
+                raise forms.ValidationError(
+                    f"予約時刻は{opening}以上、{last}以下を指定してください。"
+                )
         return reserved_at
+
+    def clean_party_size(self):
+        party_size = self.cleaned_data["party_size"]
+        if party_size > self.restaurant.max_party_size:
+            raise forms.ValidationError(
+                f"人数は{self.restaurant.max_party_size}人以下を指定してください。",
+                code="max_value",
+            )
+        return party_size
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if not self.restaurant.can_accept_reservations:
+            raise forms.ValidationError("店舗の予約設定が未完了または不正のため、現在予約を受け付けていません。")
+        return cleaned_data
