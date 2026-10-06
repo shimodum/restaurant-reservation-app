@@ -5,10 +5,11 @@
 {% block content %}
 <article class="restaurant-detail">
   <h1>{{ restaurant.name }}</h1>
+  {% include "reservations/_restaurant_image.html" %}
 
   <section>
     <h2>店舗について</h2>
-    <div>{{ restaurant.description|linebreaks }}</div>
+    <div>{{ restaurant_description|linebreaks }}</div>
   </section>
 
   <section>

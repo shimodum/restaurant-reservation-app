@@ -7,8 +7,19 @@ from .forms import ReservationForm
 from .models import Reservation, Restaurant
 
 
+def _restaurant_image_path(restaurant):
+    if not restaurant.description.startswith("[seed_demo:v1]\n"):
+        return ""
+    return {
+        "【デモ】まちの食堂": "reservations/images/demo-diner.jpg",
+        "【デモ】駅前レストラン": "reservations/images/demo-restaurant.jpg",
+    }.get(restaurant.name, "")
+
+
 def restaurant_list(request):
     restaurants = Restaurant.objects.all()
+    for restaurant in restaurants:
+        restaurant.image_static_path = _restaurant_image_path(restaurant)
     return render(
         request,
         "reservations/restaurant_list.html",
@@ -21,7 +32,11 @@ def restaurant_detail(request, pk):
     return render(
         request,
         "reservations/restaurant_detail.html",
-        {"restaurant": restaurant},
+        {
+            "restaurant": restaurant,
+            "restaurant_description": restaurant.description.removeprefix("[seed_demo:v1]\n"),
+            "restaurant_image": _restaurant_image_path(restaurant),
+        },
     )
 
 

@@ -6,9 +6,10 @@
 <h1>店舗一覧</h1>
 
 {% if restaurants %}
-  <div class="restaurant-grid">
+  <div class="restaurant-grid restaurant-grid--restaurants">
     {% for restaurant in restaurants %}
       <article class="restaurant-card">
+        {% include "reservations/_restaurant_image.html" with restaurant_image=restaurant.image_static_path %}
         <h2>{{ restaurant.name }}</h2>
         <dl>
           <dt>住所</dt>

@@ -135,6 +135,68 @@ class RestaurantViewTests(TestCase):
             html=True,
         )
 
+    def test_detail_hides_only_leading_demo_marker_without_changing_database(self):
+        description = "[seed_demo:v1]\n1行目\n2行目"
+        self.second_restaurant.description = description
+        self.second_restaurant.save()
+        response = self.client.get(reverse("reservations:restaurant_detail", args=[self.second_restaurant.pk]))
+        self.assertNotContains(response, "[seed_demo:v1]")
+        self.assertContains(response, "<p>1行目<br>2行目</p>", html=True)
+        self.assertEqual(response.context["restaurant"].description, description)
+        self.second_restaurant.refresh_from_db()
+        self.assertEqual(self.second_restaurant.description, description)
+
+    def test_detail_preserves_ordinary_descriptions_and_nonleading_markers(self):
+        for description in (
+            "普通の説明\n2行目", "1行目\n[seed_demo:v1]\n2行目",
+            " [seed_demo:v1]\n説明", "[seed_demo:v1]説明",
+            "[seed_demo:v1]\r\n説明",
+        ):
+            with self.subTest(description=description):
+                self.second_restaurant.description = description
+                self.second_restaurant.save()
+                response = self.client.get(reverse("reservations:restaurant_detail", args=[self.second_restaurant.pk]))
+                self.assertEqual(response.context["restaurant_description"], description)
+                if "[seed_demo:v1]" in description:
+                    self.assertContains(response, "[seed_demo:v1]")
+
+    def test_demo_photos_are_displayed_in_list_and_detail_without_database_changes(self):
+        from django.contrib.staticfiles import finders
+
+        for name, filename in (
+            ("【デモ】まちの食堂", "demo-diner.jpg"),
+            ("【デモ】駅前レストラン", "demo-restaurant.jpg"),
+        ):
+            with self.subTest(name=name):
+                restaurant = Restaurant.objects.create(
+                    name=name, description="[seed_demo:v1]\n説明", address="東京", business_hours="補足",
+                )
+                original = Restaurant.objects.filter(pk=restaurant.pk).values().get()
+                self.assertIsNotNone(finders.find(f"reservations/images/{filename}"))
+                for url in (reverse("reservations:restaurant_list"),
+                            reverse("reservations:restaurant_detail", args=[restaurant.pk])):
+                    response = self.client.get(url)
+                    self.assertContains(response, f'/static/reservations/images/{filename}')
+                    self.assertContains(response, "架空店舗のイメージ画像です。")
+                self.assertEqual(Restaurant.objects.filter(pk=restaurant.pk).values().get(), original)
+
+    def test_ordinary_or_unidentified_restaurants_display_placeholder(self):
+        for name, description in (
+            ("通常店舗", "説明"), ("【デモ】まちの食堂", "普通の説明"),
+            ("【デモ】まちの食堂", "説明\n[seed_demo:v1]\n"),
+            ("別の店舗", "[seed_demo:v1]\n説明"),
+        ):
+            with self.subTest(name=name, description=description):
+                self.second_restaurant.name = name
+                self.second_restaurant.description = description
+                self.second_restaurant.save()
+                for url in (reverse("reservations:restaurant_list"),
+                            reverse("reservations:restaurant_detail", args=[self.second_restaurant.pk])):
+                    response = self.client.get(url)
+                    self.assertContains(response, "画像なし")
+                    self.assertNotContains(response, "demo-diner.jpg")
+                    self.assertNotContains(response, "demo-restaurant.jpg")
+
     def test_restaurant_detail_returns_404_for_unknown_restaurant(self):
         response = self.client.get(
             reverse("reservations:restaurant_detail", args=[999999])

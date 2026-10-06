@@ -1,0 +1,10 @@
+{% load static %}
+<figure class="restaurant-photo">
+  {% if restaurant_image %}
+    <img class="restaurant-image" src="{% static restaurant_image %}" alt="{{ restaurant.name }}の内観イメージ" width="1200" height="800">
+    <figcaption class="supplementary">架空店舗のイメージ画像です。</figcaption>
+  {% else %}
+    <div class="restaurant-image restaurant-image--placeholder">画像なし</div>
+    <figcaption class="supplementary">店舗画像はありません。</figcaption>
+  {% endif %}
+</figure>
