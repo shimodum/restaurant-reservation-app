@@ -4,7 +4,7 @@
 
 Django標準のモデル・フォーム・テンプレート・認証・管理画面を使う。
 複数店舗の閲覧と予約ができる最小構成のMVPとして実装している。
-画面はサーバー側で生成し、APIやJavaScriptフレームワークは導入しない。
+画面はサーバー側で生成する。既存HTMLに予約JSON APIを追加し、JavaScriptフレームワークは導入しない。
 店舗モデル・管理画面・店舗一覧と詳細、会員登録・ログイン・ログアウトは実装済み。
 予約モデル・予約作成・自分の予約一覧・キャンセルも実装済み。
 
@@ -21,8 +21,8 @@ Django標準のモデル・フォーム・テンプレート・認証・管理�
 | 管理者 | 店舗の管理（予約管理はMVP対象外） | `/admin/` |
 
 検索、レビュー、お気に入り、決済、メール通知、店舗オーナー権限、ページネーション、
-Reservationの管理画面機能はMVP対象外。API / Django REST Framework、JavaScriptによる非同期処理、
-本格的なデザイン変更、ファビコン、デプロイも含めない。APIは予約ルール改善完了後の別フェーズとする。
+Reservationの管理画面機能はMVP対象外。JavaScriptによる非同期処理、
+本格的なデザイン変更、ファビコン、デプロイも含めない。予約APIは別フェーズとして追加済み。
 認証は標準Userと認証ビューを使い、会員登録にはUserCreationFormを使う。
 登録項目はユーザー名・パスワード・確認用パスワードとする。
 登録成功後はログイン画面へ移動し、自動ログインはしない。
@@ -94,7 +94,7 @@ MySQLのSMALLINT UNSIGNED自体の最大値や、業務上の人数上限を示�
 | user | settings.AUTH_USER_MODELへのForeignKey、PROTECT、related_name="reservations" |
 | restaurant | RestaurantへのForeignKey、PROTECT、related_name="reservations" |
 | reserved_at | DateTimeField、予約日時 |
-| party_size | PositiveSmallIntegerField、MinValueValidator(1)、店舗別上限は予約作成フォームで検証 |
+| party_size | PositiveSmallIntegerField、MinValueValidator(1)、店舗別上限は共通検証関数で検証 |
 | status | CharField(max_length=10)、TextChoices、初期値confirmed |
 | created_at | DateTimeField(auto_now_add=True) |
 
@@ -116,7 +116,8 @@ MySQLのSMALLINT UNSIGNED自体の最大値や、業務上の人数上限を示�
 - 設定変更後も既存予約の一覧・キャンセル・履歴は維持する。自動取消や再検証はしない。
 - 閲覧・キャンセル対象は必ずログイン中の利用者で絞る。
 - キャンセルできるのは開始前の予約済み予約のみ。
-- 作成・キャンセルにはPOSTとDjangoのCSRF保護を使う。
+- HTML版の予約作成・キャンセルはPOST、API版の予約作成はPOST・キャンセルはDELETEを使う。
+  どちらもCSRF保護を適用する。APIのDELETEは物理削除せず、状態を更新する論理キャンセルとする。
 - 日本時間で入力・表示し、Djangoのタイムゾーン対応を使う。
 
 このMVPは予約情報の登録を目的とする。席数、予約枠、重複・満席判定、
@@ -158,7 +159,7 @@ MySQLのSMALLINT UNSIGNED自体の最大値や、業務上の人数上限を示�
   キャンセル可能な予約のみCSRF付きPOSTボタンを表示し、確認画面は挟まない。
   空の一覧には案内と店舗一覧リンクを表示する。ページ分割は追加しない。
 - 共通テンプレート・既存のフォームとカードのCSSを再利用する。
-  JavaScript、API、Reservationの管理画面登録は追加しない。
+  HTML画面にJavaScriptやAPI呼び出しは追加しない。Reservationの管理画面登録も追加しない。
 
 ## 表示と可読性
 
@@ -189,7 +190,7 @@ Templateのautoescape無効化や不必要なsafeがないことは静的に確�
 
 `config`はプロジェクト設定、`reservations`は店舗・予約の業務処理を担当する。
 `accounts`は会員登録と標準認証ビューへのURL設定を担当する。
-サービス層やリポジトリ層は作らず、モデル・フォーム・ビューで実装する。
+サービス層やリポジトリ層は作らず、モデル・フォーム・Serializer・検証関数・Viewで実装する。
 
 1. 設計、DjangoとMySQLの開発環境（実装済み）。
 2. 店舗モデル、管理画面、店舗一覧・詳細（実装済み）。
@@ -200,5 +201,31 @@ Templateのautoescape無効化や不必要なsafeがないことは静的に確�
 7. 店舗別の予約可能時間・最大人数、既存データを保持するMigration、回帰テスト（実装済み）。
 
 店舗設定は作成リクエストで取得した値を使用する。設定変更との厳密な同時実行制御や
-サービス層は追加しない。モデルsave()は検証を自動実行しないため、将来のAPIなど
-別の作成経路を追加する際は、予約ルールの検証方法を別途設計する。
+サービス層は追加しない。モデルsave()は検証を自動実行しないため、
+APIを含む作成経路では共通検証関数を明示的に呼び出す。
+
+## 予約JSON API
+
+既存HTMLのURL・View・テンプレート・遷移は維持し、同じReservationへアクセスする。
+API仕様・curl例・応答例・HTTPステータスは[README](../README.md#予約api)を参照。
+
+- `api_urls.py`を`config/urls.py`から`/api/`へinclude。Router/ViewSetは使用しない。
+- `api_views.py`は一覧・作成のListCreateAPIViewと論理キャンセルのGenericAPIView。
+  SessionAuthenticationとIsAuthenticatedを明示し、JSONのみを入出力する。
+- 一覧・取消は必ず`filter(user=request.user).select_related("restaurant")`を使う。
+  staffも他人の予約を取得できず、他人・不存在の取消は同じ404を返す。
+- Serializerは明示した6項目を出力し、入力はrestaurant・reserved_at・party_sizeのみ。
+  restaurantはJSONの整数値だけを受け付け、実在する店舗IDを解決する。userはViewでrequest.userを設定し、statusはconfirmedに固定。
+- API日時入力は設定のタイムゾーンとして解釈する。HTMLの既存の日時変換方法は変更しない。
+  出力も設定のタイムゾーン（Asia/Tokyo）を使用し、現在有効なタイムゾーンに依存させない。
+- `validators.py`に日時形式・未来日時と営業時間・店舗別人数上限・受付可否の検証関数を置く。
+  Formは既存cleanメソッドから呼び、Serializerは変換済みデータのvalidateから呼ぶ。
+  Django ValidationErrorをAPI項目別エラーへ変換する。必須・型・人数下限は入力層の標準検証を使用。
+  Formのwidget・エラー表示とSerializerのJSON表現はそれぞれの入力層へ残す。
+- 受付可否はRestaurant.can_accept_reservations、取消可否はReservation.can_cancelを引き続き使用。
+  取消はstatusのみ更新し、delete()は呼ばない。取消済み・期限到来は409、更新なし。
+- 既存ログインのセッションを利用し、POST・DELETEはCSRF必須。
+  Service層・JWT/Token・フロントエンド・追加予約ルール・DB変更は導入しない。
+
+`tests_api.py`で本人限定・入力改ざん・日時と人数の境界・不正店舗設定・CSRF・論理取消・
+HTMLとの相互利用を確認する。既存tests.pyのHTML・モデル・Migrationテストも継続実行する。

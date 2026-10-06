@@ -9,6 +9,7 @@ PythonによるWeb開発を学ぶために、DjangoとMySQLで構築した飲食
 - 会員登録・ログイン・POSTによるログアウト（Django標準User）
 - 未来日時・店舗別の予約可能時間と最大人数での予約作成（日本時間）
 - 自分の予約一覧と、開始前の予約のキャンセル
+- DRFによる予約JSON API（一覧・作成・論理キャンセル）
 - キャンセル済み・過去の予約履歴の保持
 - Django管理画面による店舗管理
 
@@ -21,14 +22,15 @@ MVPの機能・データ設計は [設計書](docs/design.md) に記載してい
 このMVPは予約情報の登録を目的とし、席数・予約枠・満席・重複の判定は行いません。
 曜日別営業時間、定休日、日をまたぐ営業時間、二部制、滞在時間も対象外です。
 実店舗で空席を保証する仕組みではありません。
-API / Django REST Framework、JavaScriptによる非同期処理、決済、メール通知、レビュー、
+JavaScriptによる非同期処理、決済、メール通知、レビュー、
 お気に入り、店舗検索、ページネーション、店舗オーナー機能、Reservationの管理画面機能は対象外です。
-本格的なデザイン変更、ファビコン、デプロイも含めません。APIは予約ルール改善完了後の別フェーズとします。
+本格的なデザイン変更、ファビコン、デプロイも含めません。予約APIは既存HTML機能と併存します。
 
 ## 使用技術
 
 - Python 3.13
 - Django 5.2系
+- Django REST Framework 3.18系（検証版3.18.1）
 - MySQL 8.4
 - mysqlclient（DjangoからMySQLへ接続）
 - Docker / Docker Compose（ローカル開発環境）
@@ -287,3 +289,87 @@ Codexを設計確認、実装、テスト作成・実行、ドキュメント更
 AIの出力をそのまま採用するのではなく、開発者が主要処理を読み、自動テストとブラウザーで
 動作を確認しながら開発しました。全コードの人手レビューを完了したという意味ではありません。
 今回のUI調整後の目視確認は、上記のとおり別途実施します。
+
+## 予約API
+
+既存HTMLと同じReservationを使用します。既存の`/accounts/login/`でログインした
+セッションCookieを使用し、POST・DELETEには`X-CSRFToken`ヘッダーが必要です。
+JWT・Token・Basic認証、API用ログイン、Browsable APIは提供しません。
+DRF 3.18.1はDjango 5.2・Python 3.13対応の安定版で、依存範囲は`>=3.18.1,<3.19`です。
+[PyPIのリリース・対応環境](https://pypi.org/project/djangorestframework/3.18.1/)を確認しました。
+既存環境では`docker compose up -d --build web`で依存を反映します。
+
+| メソッド | URL | 成功時 |
+| --- | --- | --- |
+| GET | `/api/reservations/` | 200、本人の全予約履歴の配列（空なら`[]`） |
+| POST | `/api/reservations/` | 201、作成した予約 |
+| DELETE | `/api/reservations/<id>/` | 204、本文なし。statusだけをcancelledへ更新 |
+
+一覧は`-reserved_at, -pk`順。staffも本人の予約だけが対象です。
+入力日時は日本時間の`YYYY-MM-DDTHH:MM`のみ（秒・タイムゾーン・空白は拒否）、
+出力日時は日本時間のISO 8601形式です。restaurantは店舗IDです。
+userはログインユーザー、statusはconfirmedとしてサーバーで設定します。
+id・status・created_atは読み取り専用で入力値を無視し、userや店舗設定などの未定義項目も採用しません。
+
+以下は、HTMLログイン後のsessionid・csrftokenを含むCookieファイルを
+`/tmp/reservation-api-cookies.txt`へ用意し、対応するCSRFトークンを指定した場合の例です。
+Cookieやトークンをリポジトリへ保存しないでください。
+
+```bash
+curl -b /tmp/reservation-api-cookies.txt http://localhost:8000/api/reservations/
+
+curl -b /tmp/reservation-api-cookies.txt \
+  -H 'Content-Type: application/json' \
+  -H 'X-CSRFToken: <CSRFトークン>' \
+  -d '{"restaurant":1,"reserved_at":"2030-01-11T19:00","party_size":2}' \
+  http://localhost:8000/api/reservations/
+
+curl -X DELETE -b /tmp/reservation-api-cookies.txt \
+  -H 'X-CSRFToken: <CSRFトークン>' \
+  http://localhost:8000/api/reservations/42/
+```
+
+POSTの201レスポンス例（GETは同じ構造の配列）：
+
+```json
+{
+  "id": 42,
+  "restaurant": 1,
+  "reserved_at": "2030-01-11T19:00:00+09:00",
+  "party_size": 2,
+  "status": "confirmed",
+  "created_at": "2030-01-10T12:00:00+09:00"
+}
+```
+
+| エラー | HTTPステータス |
+| --- | --- |
+| 入力不正、店舗IDが存在しない、店舗設定が未完了・不正 | 400 |
+| 未ログイン、CSRFトークンなし・不正 | 403 |
+| DELETE対象が他人の予約または存在しない | 404 |
+| 未対応メソッド（詳細GET、PUT、PATCHなど） | 405 |
+| 取消済み、現在・過去の予約をキャンセル | 409 |
+| POSTがJSON以外 | 415 |
+
+400は`{"party_size":["人数は10人以下を指定してください。"]}`などの項目別エラー、
+店舗受付停止は`non_field_errors`、キャンセル不可の409は
+`{"detail":"この予約はすでにキャンセル済みです。"}`などで返します。
+HEAD・OPTIONSは標準動作で、予約を変更しません。
+
+APIテストと全体の確認コマンド：
+
+```bash
+docker compose exec web python manage.py test reservations.tests_api
+docker compose exec web python manage.py test
+docker compose exec web python manage.py check --database default
+docker compose exec web python manage.py makemigrations --check --dry-run
+git diff --check
+```
+
+### 予約APIの検証結果（2026年10月6日）
+
+- Docker環境のPython 3.13 / Django 5.2.17 / DRF 3.18.1でAPIテスト20件が成功。
+- 既存HTML・認証・モデル・Migrationを含む全73件が成功。
+- `check --database default`は問題なし、`makemigrations --check --dry-run`は差分なし。
+- `git diff --check`は空白エラーなし。commit・pushは未実施。
+- APIは自動テストで検証。ブラウザーやcurlによる実ユーザー操作の確認は未実施。

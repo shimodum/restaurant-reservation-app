@@ -1,19 +1,17 @@
-import re
-
 from django import forms
-from django.utils import timezone
 
 from .models import Reservation
+from .validators import (
+    validate_reservation_datetime_format, validate_reservation_datetime,
+    validate_reservation_party_size, validate_restaurant_accepts_reservations,
+)
 
 
 class ReservationDateTimeField(forms.DateTimeField):
     def to_python(self, value):
         # DjangoのISO日時解析より先に、秒・タイムゾーン・空白を拒否する。
-        if value not in self.empty_values and (
-            not isinstance(value, str)
-            or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}", value) is None
-        ):
-            raise forms.ValidationError(self.error_messages["invalid"], code="invalid")
+        if value not in self.empty_values:
+            validate_reservation_datetime_format(value, self.error_messages["invalid"])
         return super().to_python(value)
 
 
@@ -51,29 +49,15 @@ class ReservationForm(forms.ModelForm):
 
     def clean_reserved_at(self):
         reserved_at = self.cleaned_data["reserved_at"]
-        if reserved_at <= timezone.now():
-            raise forms.ValidationError("予約日時は未来の日時を指定してください。")
-        if self.restaurant.can_accept_reservations:
-            reserved_time = timezone.localtime(reserved_at, timezone.get_default_timezone()).time()
-            if not self.restaurant.opening_time <= reserved_time <= self.restaurant.last_reservation_time:
-                opening = self.restaurant.opening_time.strftime("%H:%M")
-                last = self.restaurant.last_reservation_time.strftime("%H:%M")
-                raise forms.ValidationError(
-                    f"予約時刻は{opening}以上、{last}以下を指定してください。"
-                )
+        validate_reservation_datetime(self.restaurant, reserved_at)
         return reserved_at
 
     def clean_party_size(self):
         party_size = self.cleaned_data["party_size"]
-        if party_size > self.restaurant.max_party_size:
-            raise forms.ValidationError(
-                f"人数は{self.restaurant.max_party_size}人以下を指定してください。",
-                code="max_value",
-            )
+        validate_reservation_party_size(self.restaurant, party_size)
         return party_size
 
     def clean(self):
         cleaned_data = super().clean()
-        if not self.restaurant.can_accept_reservations:
-            raise forms.ValidationError("店舗の予約設定が未完了または不正のため、現在予約を受け付けていません。")
+        validate_restaurant_accepts_reservations(self.restaurant)
         return cleaned_data
