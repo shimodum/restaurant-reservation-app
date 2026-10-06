@@ -49,16 +49,18 @@ UserとRestaurantそれぞれに対し、Reservationは多対一。
 
 ### ER図
 
-モデル間の関係を示す概念ER図です。UserはDjango標準モデルです。
+モデル間の関係を示す概念ER図です。
 
 ```mermaid
 erDiagram
     User ||--o{ Reservation : "予約する"
     Restaurant ||--o{ Reservation : "予約を受ける"
-    User["User（Django標準）"]
+    User["User"]
     Restaurant["Restaurant"]
     Reservation["Reservation"]
 ```
+
+UserはDjango標準モデルです。
 
 `||`は「必ず1件」、`o{`は「0件以上」を表します。
 1人のUserと1つのRestaurantはそれぞれ0件以上のReservationを持ち、

@@ -77,12 +77,12 @@ Python依存関係の範囲は`requirements.txt`に記載しています。
 erDiagram
     User ||--o{ Reservation : "予約する"
     Restaurant ||--o{ Reservation : "予約を受ける"
-    User["User（Django標準）"]
+    User["User"]
     Restaurant["Restaurant"]
     Reservation["Reservation"]
 ```
 
-各予約は1人のユーザーと1つの店舗に属し、ユーザーと店舗はそれぞれ複数の予約を持てます。
+UserはDjango標準モデルです。各予約は1人のユーザーと1つの店舗に属し、ユーザーと店舗はそれぞれ複数の予約を持てます。
 詳細なモデル定義は[設計書](docs/design.md#データ)を参照してください。
 
 ## 実装上の工夫
