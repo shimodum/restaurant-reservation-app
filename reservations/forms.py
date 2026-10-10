@@ -1,33 +1,60 @@
+from datetime import datetime
+
 from django import forms
+from django.utils import timezone
 
 from .models import Reservation
 from .validators import (
-    validate_reservation_datetime_format, validate_reservation_datetime,
+    reservation_time_choices, validate_reservation_datetime_format,
+    validate_reservation_datetime,
     validate_reservation_party_size, validate_restaurant_accepts_reservations,
 )
 
 
-class ReservationDateTimeField(forms.DateTimeField):
-    def to_python(self, value):
-        # DjangoのISO日時解析より先に、秒・タイムゾーン・空白を拒否する。
-        if value not in self.empty_values:
-            validate_reservation_datetime_format(value, self.error_messages["invalid"])
-        return super().to_python(value)
+HTML_DATETIME_INVALID_MESSAGE = "予約日はYYYY-MM-DD形式の正しい日付を入力し、時刻を選択してください。"
+
+
+class ReservationDateTimeWidget(forms.MultiWidget):
+    def __init__(self, attrs=None):
+        super().__init__([
+            forms.DateInput(format="%Y-%m-%d", attrs={"type": "date", "aria-label": "予約日"}),
+            forms.Select(attrs={"aria-label": "予約時刻"}),
+        ], attrs)
+
+    def decompress(self, value):
+        if value:
+            value = timezone.localtime(value, timezone.get_default_timezone())
+            return [value.date(), value.strftime("%H:%M")]
+        return [None, None]
+
+
+class ReservationDateTimeField(forms.MultiValueField):
+    widget = ReservationDateTimeWidget
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            fields=[forms.CharField(strip=False), forms.CharField(strip=False)],
+            error_messages={
+                "required": "予約日時を入力してください。",
+                "incomplete": "予約日と予約時刻を両方入力してください。",
+                "invalid": HTML_DATETIME_INVALID_MESSAGE,
+            }, **kwargs,
+        )
+
+    def compress(self, data_list):
+        if not data_list:
+            return None
+        value = f"{data_list[0]}T{data_list[1]}"
+        validate_reservation_datetime_format(value, HTML_DATETIME_INVALID_MESSAGE)
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M")
+        except ValueError as error:
+            raise forms.ValidationError(HTML_DATETIME_INVALID_MESSAGE, code="invalid") from error
+        return timezone.make_aware(parsed, timezone.get_default_timezone())
 
 
 class ReservationForm(forms.ModelForm):
-    reserved_at = ReservationDateTimeField(
-        label="予約日時",
-        input_formats=["%Y-%m-%dT%H:%M"],
-        widget=forms.DateTimeInput(
-            format="%Y-%m-%dT%H:%M",
-            attrs={"type": "datetime-local", "step": "60"},
-        ),
-        error_messages={
-            "required": "予約日時を入力してください。",
-            "invalid": "予約日時は日本時間でYYYY-MM-DDTHH:MM形式の正しい日時を入力してください。",
-        },
-    )
+    reserved_at = ReservationDateTimeField(label="予約日時")
 
     class Meta:
         model = Reservation
@@ -42,6 +69,9 @@ class ReservationForm(forms.ModelForm):
     def __init__(self, *args, restaurant, **kwargs):
         self.restaurant = restaurant
         super().__init__(*args, **kwargs)
+        self.fields["reserved_at"].widget.widgets[1].choices = [
+            ("", "時刻を選択してください"), *reservation_time_choices(restaurant)
+        ]
         # PositiveSmallIntegerFieldが設定するmin=0を、予約人数の下限に合わせる。
         self.fields["party_size"].widget.attrs.update(
             {"min": 1, "max": restaurant.max_party_size}

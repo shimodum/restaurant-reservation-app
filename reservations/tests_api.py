@@ -98,7 +98,7 @@ class ReservationAPITests(TestCase):
 
     def test_html_creation_can_be_listed_and_cancelled_by_api(self):
         response = self.client.post(reverse("reservations:reservation_create", args=[self.restaurant.pk]),
-                                    {"reserved_at": "2030-01-11T19:00", "party_size": 2})
+                                    {"reserved_at_0": "2030-01-11", "reserved_at_1": "19:00", "party_size": 2})
         self.assertEqual(response.status_code, 302)
         reservation = Reservation.objects.get()
         self.assertEqual(self.client.get(self.url).json()[0]["id"], reservation.pk)
@@ -158,10 +158,10 @@ class ReservationAPITests(TestCase):
     def test_future_present_and_past(self):
         for value in ("2030-01-10T11:59", "2030-01-10T12:00"):
             self.assertEqual(self.post(reserved_at=value).status_code, 400)
-        self.assertEqual(self.post(reserved_at="2030-01-10T12:01").status_code, 201)
+        self.assertEqual(self.post(reserved_at="2030-01-10T12:30").status_code, 201)
 
     def test_hours_boundaries_and_forged_settings(self):
-        for value, allowed in (("10:59", False), ("11:00", True), ("20:59", True),
+        for value, allowed in (("10:59", False), ("11:00", True), ("20:30", True),
                                ("21:00", True), ("21:01", False), ("21:59", False), ("22:00", False)):
             with self.subTest(value=value):
                 before = Reservation.objects.count()
@@ -272,3 +272,51 @@ class ReservationAPITests(TestCase):
         self.assertEqual(client.post(self.url, self.data(), format="json", HTTP_X_CSRFTOKEN="invalid").status_code, 403)
         self.assertEqual(client.post(self.url, self.data(), format="json", HTTP_X_CSRFTOKEN=token).status_code, 201)
         self.assertEqual(client.delete(self.cancel_url(reservation), HTTP_X_CSRFTOKEN=token).status_code, 204)
+
+    def test_half_hour_and_fractional_restaurant_boundaries(self):
+        self.restaurant.opening_time = time(11, 15)
+        self.restaurant.last_reservation_time = time(19, 15)
+        self.restaurant.save()
+        for clock, expected in (("11:00", 400), ("11:15", 400), ("11:30", 201),
+                                ("12:00", 201), ("12:30", 201), ("12:01", 400),
+                                ("19:00", 201), ("19:15", 400), ("19:17", 400), ("19:30", 400)):
+            with self.subTest(clock=clock):
+                self.assertEqual(self.post(reserved_at=f"2030-01-11T{clock}").status_code, expected)
+
+    def test_non_half_hour_within_hours_returns_field_error(self):
+        for clock in ("12:01", "19:17"):
+            with self.subTest(clock=clock):
+                response = self.post(reserved_at=f"2030-01-11T{clock}")
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["reserved_at"],
+                                 ["予約時刻は毎時00分・30分を選択してください。"])
+        self.assertFalse(Reservation.objects.exists())
+
+    def test_no_choices_rejects_api_creation(self):
+        self.restaurant.opening_time = time(11, 5)
+        self.restaurant.last_reservation_time = time(11, 20)
+        self.restaurant.save()
+        response = self.post(reserved_at="2030-01-11T11:00")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("この店舗には予約可能な時刻がありません。", response.json()["non_field_errors"])
+        self.assertFalse(Reservation.objects.exists())
+
+    def test_future_validation_uses_japan_time_with_utc_active(self):
+        with timezone.override("UTC"):
+            for clock, expected in (("11:30", 400), ("12:00", 400), ("12:30", 201)):
+                with self.subTest(clock=clock):
+                    response = self.post(reserved_at=f"2030-01-10T{clock}")
+                    self.assertEqual(response.status_code, expected)
+                    if expected == 201:
+                        self.assertEqual(response.json()["reserved_at"], "2030-01-10T12:30:00+09:00")
+
+    def test_legacy_quarter_hour_can_be_listed_and_cancelled(self):
+        reservation = self.reserve(reserved_at=self.now + timedelta(days=1, minutes=15))
+        original = (reservation.reserved_at, reservation.user_id, reservation.restaurant_id,
+                    reservation.party_size, reservation.created_at)
+        self.assertIn("12:15:00+09:00", self.client.get(self.url).json()[0]["reserved_at"])
+        self.assertEqual(self.client.delete(self.cancel_url(reservation)).status_code, 204)
+        reservation.refresh_from_db()
+        self.assertEqual(reservation.status, Reservation.Status.CANCELLED)
+        self.assertEqual(original, (reservation.reserved_at, reservation.user_id, reservation.restaurant_id,
+                                   reservation.party_size, reservation.created_at))

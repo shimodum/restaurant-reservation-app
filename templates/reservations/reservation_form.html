@@ -5,14 +5,17 @@
 {% block content %}
 <section class="auth-panel">
   <h1>{{ restaurant.name }}の予約</h1>
-  {% if restaurant.can_accept_reservations %}
-  <p class="supplementary">予約日時は日本時間で入力してください。人数は1〜{{ restaurant.max_party_size }}人です。</p>
-  <p class="supplementary">{{ restaurant.opening_time|time:"H:i" }}〜{{ restaurant.last_reservation_time|time:"H:i" }}の予約が可能です。最終予約可能時刻ちょうども予約できます。閉店時刻は{{ restaurant.closing_time|time:"H:i" }}です。</p>
+  {% if restaurant.can_accept_reservations and has_reservation_times %}
+  <p class="supplementary">予約日は日本時間で入力し、時刻は毎時00分・30分から選択してください。人数は1〜{{ restaurant.max_party_size }}人です。</p>
+  <p class="supplementary">{{ restaurant.opening_time|time:"H:i" }}〜{{ restaurant.last_reservation_time|time:"H:i" }}の予約が可能です。範囲内の毎時00分・30分のみ予約できます。閉店時刻は{{ restaurant.closing_time|time:"H:i" }}です。</p>
   <form class="auth-form" method="post" action="{% url 'reservations:reservation_create' restaurant.pk %}" novalidate>
     {% csrf_token %}
     {{ form.as_div }}
     <button class="button" type="submit">予約する</button>
   </form>
+  {% elif restaurant.can_accept_reservations %}
+    <p>この店舗には予約可能な時刻がありません。</p>
+    {{ form.non_field_errors }}
   {% else %}
     <p>店舗の予約設定が未完了または不正のため、現在予約を受け付けていません。</p>
     {{ form.non_field_errors }}

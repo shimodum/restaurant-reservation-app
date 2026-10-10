@@ -5,6 +5,7 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 
 from .forms import ReservationForm
 from .models import Reservation, Restaurant
+from .validators import reservation_time_choices
 
 
 def _restaurant_image_path(restaurant):
@@ -57,7 +58,11 @@ def reservation_create(request, pk):
     return render(
         request,
         "reservations/reservation_form.html",
-        {"restaurant": restaurant, "form": form},
+        {
+            "restaurant": restaurant,
+            "form": form,
+            "has_reservation_times": bool(reservation_time_choices(restaurant)),
+        },
     )
 
 

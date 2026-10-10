@@ -322,6 +322,8 @@ class ReservationTests(TestCase):
     def data(self, **overrides):
         data = {"reserved_at": "2030-01-11T12:00", "party_size": "2"}
         data.update(overrides)
+        date, separator, clock = data.pop("reserved_at").partition("T")
+        data.update(reserved_at_0=date, reserved_at_1=clock if separator else date)
         return data
 
     def reserve(self, **overrides):
@@ -371,7 +373,12 @@ class ReservationTests(TestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertIn(field, response.context["form"].errors)
                 self.assertContains(response, 'class="errorlist"')
-                self.assertEqual(response.context["form"].data[field], value)
+                if field == "reserved_at":
+                    expected = self.data(reserved_at=value)
+                    self.assertEqual(response.context["form"][field].value(),
+                                     [expected["reserved_at_0"], expected["reserved_at_1"]])
+                else:
+                    self.assertEqual(response.context["form"].data[field], value)
                 self.assertFalse(Reservation.objects.exists())
         response = self.client.post(self.create_url, {})
         self.assertEqual(set(response.context["form"].errors), {"reserved_at", "party_size"})
@@ -396,7 +403,7 @@ class ReservationTests(TestCase):
             "2030-02-30T12:00",
             "2030-01-11T24:00",
         ]
-        message = "予約日時は日本時間でYYYY-MM-DDTHH:MM形式の正しい日時を入力してください。"
+        message = "予約日はYYYY-MM-DD形式の正しい日付を入力し、時刻を選択してください。"
         for value in values:
             with self.subTest(value=value):
                 response = self.client.post(self.create_url, self.data(reserved_at=value))
@@ -405,7 +412,9 @@ class ReservationTests(TestCase):
                 self.assertEqual(form.errors.as_data()["reserved_at"][0].code, "invalid")
                 self.assertEqual(form.errors["reserved_at"], [message])
                 self.assertContains(response, message)
-                self.assertEqual(form.data["reserved_at"], value)
+                expected = self.data(reserved_at=value)
+                self.assertEqual(form["reserved_at"].value(),
+                                 [expected["reserved_at_0"], expected["reserved_at_1"]])
                 self.assertFalse(Reservation.objects.exists())
 
     def test_reservation_errors_display_user_friendly_messages(self):
@@ -452,7 +461,7 @@ class ReservationTests(TestCase):
     def test_create_get_and_post_ignore_protected_fields(self):
         response = self.client.get(self.create_url)
         self.assertTemplateUsed(response, "reservations/reservation_form.html")
-        self.assertContains(response, 'type="datetime-local"')
+        self.assertContains(response, 'type="date"')
         self.assertContains(response, 'min="1"')
         self.assertContains(response, 'max="10"')
         self.assertContains(response, 'name="csrfmiddlewaretoken"')
@@ -592,7 +601,7 @@ class ReservationTests(TestCase):
         self.restaurant.last_reservation_time = time(21)
         self.restaurant.closing_time = time(22)
         self.restaurant.save()
-        for value, allowed in (("10:59", False), ("11:00", True), ("20:59", True),
+        for value, allowed in (("10:59", False), ("11:00", True), ("20:30", True),
                                ("21:00", True), ("21:01", False), ("21:59", False), ("22:00", False)):
             with self.subTest(time=value):
                 before = Reservation.objects.count()
@@ -621,11 +630,12 @@ class ReservationTests(TestCase):
 
     def test_reservation_hours_use_default_instead_of_active_timezone(self):
         with timezone.override("UTC"):
-            # 入力の解釈は現在有効なタイムゾーン、営業時間の判定は設定の日本時間。
-            form = ReservationForm(self.data(reserved_at="2030-01-11T02:00"),
+            # 入力も判定も設定の日本時間。現在有効なタイムゾーンに依存しない。
+            form = ReservationForm(self.data(reserved_at="2030-01-11T11:00"),
                                    restaurant=self.restaurant)
             self.assertTrue(form.is_valid(), form.errors)
-            form = ReservationForm(self.data(reserved_at="2030-01-11T01:59"),
+            self.assertEqual(form.cleaned_data["reserved_at"].utcoffset(), timedelta(hours=9))
+            form = ReservationForm(self.data(reserved_at="2030-01-11T10:59"),
                                    restaurant=self.restaurant)
             self.assertFalse(form.is_valid())
             self.assertIn("reserved_at", form.errors)
@@ -726,6 +736,94 @@ class ReservationTests(TestCase):
         reservation.refresh_from_db()
         self.assertEqual(reservation.status, Reservation.Status.CANCELLED)
         self.assertEqual((reservation.reserved_at, reservation.party_size, reservation.created_at), original)
+
+    def test_half_hour_creation_and_future_boundary(self):
+        for clock in ("12:00", "12:30"):
+            self.assertRedirects(self.client.post(self.create_url, self.data(
+                reserved_at=f"2030-01-11T{clock}"
+            )), self.list_url)
+        self.assertEqual(Reservation.objects.count(), 2)
+        for clock, allowed in (("11:30", False), ("12:00", False), ("12:30", True)):
+            form = ReservationForm(self.data(reserved_at=f"2030-01-10T{clock}"), restaurant=self.restaurant)
+            self.assertEqual(form.is_valid(), allowed)
+
+    def test_half_hour_choices_and_invalid_minutes(self):
+        for clock in ("12:00", "12:30", "12:01", "19:17"):
+            with self.subTest(clock=clock):
+                form = ReservationForm(self.data(reserved_at=f"2030-01-11T{clock}"), restaurant=self.restaurant)
+                self.assertEqual(form.is_valid(), clock in ("12:00", "12:30"))
+        self.restaurant.opening_time = time(11, 15)
+        self.restaurant.last_reservation_time = time(19, 15)
+        self.restaurant.save()
+        response = self.client.get(self.create_url)
+        choices = response.context["form"].fields["reserved_at"].widget.widgets[1].choices
+        self.assertEqual(choices[1], ("11:30", "11:30"))
+        self.assertEqual(choices[-1], ("19:00", "19:00"))
+        expected = [
+            (f"{hour:02d}:{minute:02d}", f"{hour:02d}:{minute:02d}")
+            for hour in range(11, 20) for minute in (0, 30)
+            if (hour, minute) >= (11, 30) and (hour, minute) <= (19, 0)
+        ]
+        self.assertEqual(list(choices), [("", "時刻を選択してください"), *expected])
+        for clock, valid in (("11:00", False), ("11:15", False), ("11:30", True),
+                             ("19:00", True), ("19:15", False), ("19:30", False)):
+            form = ReservationForm(self.data(reserved_at=f"2030-01-11T{clock}"), restaurant=self.restaurant)
+            self.assertEqual(form.is_valid(), valid)
+        self.restaurant.refresh_from_db()
+        self.assertEqual(self.restaurant.opening_time, time(11, 15))
+        self.assertEqual(self.restaurant.last_reservation_time, time(19, 15))
+
+    def test_no_choices_blocks_form_and_post(self):
+        self.restaurant.opening_time = time(11, 5)
+        self.restaurant.last_reservation_time = time(11, 20)
+        self.restaurant.save()
+        for response in (self.client.get(self.create_url), self.client.post(self.create_url, self.data())):
+            self.assertContains(response, "この店舗には予約可能な時刻がありません。")
+            self.assertNotContains(response, '<button class="button" type="submit">予約する</button>')
+        self.assertFalse(Reservation.objects.exists())
+
+    def test_single_choice_and_choices_are_isolated_per_form(self):
+        self.restaurant.opening_time = time(11, 15)
+        self.restaurant.last_reservation_time = time(11, 45)
+        form = ReservationForm(restaurant=self.restaurant)
+        choices = form.fields["reserved_at"].widget.widgets[1].choices
+        self.assertEqual(list(choices), [("", "時刻を選択してください"), ("11:30", "11:30")])
+        ReservationForm(restaurant=self.other_restaurant)
+        self.assertEqual(list(form.fields["reserved_at"].widget.widgets[1].choices), list(choices))
+
+    def test_future_validation_uses_japan_time_with_utc_active(self):
+        with timezone.override("UTC"):
+            for clock, valid in (("11:30", False), ("12:00", False), ("12:30", True)):
+                with self.subTest(clock=clock):
+                    form = ReservationForm(self.data(reserved_at=f"2030-01-10T{clock}"),
+                                           restaurant=self.restaurant)
+                    self.assertEqual(form.is_valid(), valid)
+                    if valid:
+                        self.assertEqual(form.cleaned_data["reserved_at"].utcoffset(), timedelta(hours=9))
+
+    def test_split_input_redisplay_and_missing_parts(self):
+        response = self.client.post(self.create_url, self.data(reserved_at="2030-01-11T12:30", party_size="0"))
+        self.assertContains(response, 'value="2030-01-11"')
+        self.assertContains(response, '<option value="12:30" selected>12:30</option>', html=True)
+        self.assertContains(response, 'name="reserved_at_0"')
+        self.assertContains(response, 'name="reserved_at_1"')
+        for field in ("reserved_at_0", "reserved_at_1"):
+            data = self.data()
+            data[field] = ""
+            form = ReservationForm(data, restaurant=self.restaurant)
+            self.assertFalse(form.is_valid())
+            self.assertIn("reserved_at", form.errors)
+
+    def test_legacy_quarter_hour_reservation_keeps_data_on_cancel(self):
+        reservation = self.reserve(reserved_at=self.now + timedelta(days=1, minutes=15))
+        original = (reservation.reserved_at, reservation.user_id, reservation.restaurant_id,
+                    reservation.party_size, reservation.created_at)
+        self.assertContains(self.client.get(self.list_url), "12:15")
+        self.assertRedirects(self.client.post(self.cancel_url(reservation)), self.list_url)
+        reservation.refresh_from_db()
+        self.assertEqual(reservation.status, Reservation.Status.CANCELLED)
+        self.assertEqual(original, (reservation.reserved_at, reservation.user_id, reservation.restaurant_id,
+                                   reservation.party_size, reservation.created_at))
 
 
 class BookingRulesMigrationTests(TransactionTestCase):

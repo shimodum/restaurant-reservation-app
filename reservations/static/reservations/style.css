@@ -220,7 +220,8 @@ button.button {
   font-weight: 700;
 }
 
-.auth-form input {
+.auth-form input,
+.auth-form select {
   width: 100%;
   min-width: 0;
   max-width: 100%;

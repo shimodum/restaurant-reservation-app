@@ -112,7 +112,9 @@ MySQLのSMALLINT UNSIGNED自体の最大値や、業務上の人数上限を示�
 - ログインした利用者だけが予約できる。
 - 日時は未来、人数は1〜店舗のmax_party_sizeとする。
 - 日本時間の予約時刻は`opening_time <= 予約時刻 <= last_reservation_time`とする。
-  開店時刻と最終予約可能時刻ちょうどの予約は可能。閉店時刻は受付の上限に使わない。
+  HTML・REST APIの新規予約は毎時00分・30分のみ受け付ける。閉店時刻は受付の上限に使わない。
+  設定値は丸めず、範囲内の候補を生成する。11:15〜19:15なら11:30〜19:00。
+  候補がない店舗は新規予約を受け付けない。旧仕様の12:15などの履歴・取消は維持する。
 - 3時刻が未設定・不正な店舗は新規予約を受け付けない。
 - business_hoursのL.O.などの記述は予約可否の判定に使用しない。
 - 設定変更後も既存予約の一覧・キャンセル・履歴は維持する。自動取消や再検証はしない。
@@ -132,9 +134,10 @@ MySQLのSMALLINT UNSIGNED自体の最大値や、業務上の人数上限を示�
 - URL名は`reservations:reservation_create`、`reservations:reservation_list`、
   `reservations:reservation_cancel`。既存の店舗URL・URL名は維持する。
 - ReservationFormはModelFormで、入力項目は`reserved_at`・`party_size`だけ。
-  日時は`datetime-local`を使用し、`%Y-%m-%dT%H:%M`の分単位で日本時間として入力する。
-  サーバー側でも半角数字・固定桁数の`YYYY-MM-DDTHH:MM`形式を日時変換前に検証し、
-  秒・タイムゾーン・前後の空白を拒否する。形式違反はフォームエラーとして扱う。
+  MultiValueField・MultiWidgetで日付入力と時刻selectを表示し、既存reserved_atへ保存する。
+  時刻候補は共通validatorモジュールで生成する。必須・実在日付・固定桁数の検証を行い、
+  日付と時刻の結合後に設定のタイムゾーン（日本時間）で日時へ変換する。
+  秒・タイムゾーン・前後の空白を拒否し、入力エラー時は日付・選択時刻を再表示する。
 - ReservationFormは必須キーワード引数restaurantでURLの対象店舗を受け取る。
   clean_reserved_at()で未来日時と日本時間の予約可能時間を、clean_party_size()で店舗別上限を検証する。
   clean()で不正・未設定の店舗を拒否する。人数1以上はモデルvalidatorをModelForm経由で適用する。
@@ -152,7 +155,8 @@ MySQLのSMALLINT UNSIGNED自体の最大値や、業務上の人数上限を示�
 - 作成成功・キャンセル処理後は一覧へリダイレクトし、Django messagesで結果を表示する。
   入力エラー時はフォームの値とエラーを再表示する。
 - 店舗一覧・詳細に開店〜閉店、最終予約可能時刻、最大人数、補足案内を表示する。
-  予約画面には両端を含む受付時間・閉店時刻・人数範囲を表示する。
+  予約画面には受付範囲・30分刻みの案内・閉店時刻・人数範囲を表示する。
+  候補がない場合は案内を表示し、入力フォームを非表示にする。
   未設定・不正な店舗は受付停止の案内を表示し、詳細の予約リンクと予約画面の入力フォームを非表示にする。
   直接POSTも拒否する。
 - 店舗詳細から予約フォームへ進み、共通ヘッダーから自分の予約一覧へ進む。
@@ -181,7 +185,7 @@ PCで1.125rem、520px以下で1remとし、行間は1.6を使う。
 本人限定の一覧・キャンセル、POST値の改ざん、GETで変更されないこと、履歴の保持・削除保護、
 並び順・日本時間表示・導線を自動テストする。CSRFは`Client(enforce_csrf_checks=True)`で
 トークンなしの拒否と有効なトークンの成功を確認する。既存店舗・認証テストも維持する。
-開店11:00・最終予約21:00・閉店22:00の場合、10:59拒否、11:00成功、20:59成功、
+開店11:00・最終予約21:00・閉店22:00の場合、10:59拒否、11:00成功、20:30成功、
 21:00成功、21:01・21:59・22:00拒否を検証する。設定整合性、未設定受付停止、店舗別判定、
 L.O.が判定に影響しないこと、設定変更後の履歴・キャンセルも確認する。
 MigrationExecutorとTransactionTestCaseで専用テストDB内の旧データを移行し、
@@ -232,11 +236,11 @@ APIを含む作成経路では共通検証関数を明示的に呼び出す。
   staffも他人の予約を取得できず、他人・不存在の取消は同じ404を返す。
 - Serializerは明示した6項目を出力し、入力はrestaurant・reserved_at・party_sizeのみ。
   restaurantはJSONの整数値だけを受け付け、実在する店舗IDを解決する。userはViewでrequest.userを設定し、statusはconfirmedに固定。
-- API日時入力は設定のタイムゾーンとして解釈する。HTMLの既存の日時変換方法は変更しない。
+- API日時入力は設定のタイムゾーンとして解釈する。HTMLも同じ日本時間で解釈する。
   出力も設定のタイムゾーン（Asia/Tokyo）を使用し、現在有効なタイムゾーンに依存させない。
 - `validators.py`に日時形式・未来日時と営業時間・店舗別人数上限・受付可否の検証関数を置く。
-  日時形式はFormのto_python()とSerializerフィールドのto_internal_value()で変換前に検証する。
-  未来日時・営業時間・人数上限・受付可否はFormのcleanメソッドとSerializerのvalidate()から呼ぶ。
+  日時形式はFormのcompress()とSerializerフィールドのto_internal_value()で変換前に検証する。
+  未来日時・営業時間・30分刻み・人数上限・受付可否はFormのcleanメソッドとSerializerのvalidate()から呼ぶ。
   Django ValidationErrorをAPI項目別エラーへ変換する。必須・型・人数下限は入力層の標準検証を使用。
   Formのwidget・エラー表示とSerializerのJSON表現はそれぞれの入力層へ残す。
 - 受付可否はRestaurant.can_accept_reservations、取消可否はReservation.can_cancelを引き続き使用。
