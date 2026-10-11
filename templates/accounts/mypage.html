@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}マイページ | 飲食店予約アプリ{% endblock %}
+
+{% block content %}
+<section class="auth-panel">
+  <h1>マイページ</h1>
+  <dl>
+    <dt>ユーザー名（変更不可）</dt>
+    <dd>{{ user.username }}</dd>
+    <dt>姓</dt>
+    <dd>{{ user.last_name|default:"未設定" }}</dd>
+    <dt>名</dt>
+    <dd>{{ user.first_name|default:"未設定" }}</dd>
+    <dt>メールアドレス</dt>
+    <dd>{{ user.email|default:"未設定" }}</dd>
+  </dl>
+  <h2>プロフィール編集</h2>
+  <p class="supplementary">姓・名・メールアドレスは任意入力です。</p>
+  <form class="auth-form" method="post" action="{% url 'accounts:mypage' %}" novalidate>
+    {% csrf_token %}
+    {{ form.as_div }}
+    <button class="button" type="submit">プロフィールを更新</button>
+  </form>
+  <p><a href="{% url 'accounts:password_change' %}">パスワードを変更</a></p>
+  <p><a href="{% url 'reservations:reservation_list' %}">自分の予約一覧</a></p>
+</section>
+{% endblock %}

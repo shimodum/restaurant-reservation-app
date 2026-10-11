@@ -6,6 +6,8 @@ from . import views
 app_name = "accounts"
 
 urlpatterns = [
+    path("mypage/", views.mypage, name="mypage"),
+    path("password/change/", views.AccountPasswordChangeView.as_view(), name="password_change"),
     path("signup/", views.signup, name="signup"),
     path(
         "login/",

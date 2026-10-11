@@ -3,8 +3,9 @@ from datetime import time
 from django.contrib.auth.models import User
 from django.test import Client, TestCase
 from django.urls import reverse
+from django.utils import timezone
 
-from reservations.models import Restaurant
+from reservations.models import Reservation, Restaurant
 
 
 class AccountTests(TestCase):
@@ -213,3 +214,217 @@ class AccountTests(TestCase):
                     self.assertNotIn("_auth_user_id", client.session)
                 if action == "signup":
                     self.assertEqual(User.objects.count(), count + 1)
+
+
+class MyPageTests(TestCase):
+    password = "Mvp-test!47-river"
+    new_password = "Changed!82-mountain"
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(username="member", password=cls.password)
+        cls.other = User.objects.create_user(
+            username="other", password=cls.password, last_name="別", first_name="利用者",
+            email="shared@example.com",
+        )
+        cls.restaurant = Restaurant.objects.create(
+            name="食堂", description="料理", address="東京都", business_hours="11時から",
+        )
+        for user in (cls.user, cls.other):
+            Reservation.objects.create(
+                user=user, restaurant=cls.restaurant, reserved_at=timezone.now(), party_size=2,
+            )
+
+    def setUp(self):
+        self.client.force_login(self.user)
+        self.url = reverse("accounts:mypage")
+        self.password_url = reverse("accounts:password_change")
+
+    def profile_data(self, **overrides):
+        data = {"last_name": "山田", "first_name": "太郎", "email": "shared@example.com"}
+        data.update(overrides)
+        return data
+
+    def password_data(self, **overrides):
+        data = {
+            "old_password": self.password,
+            "new_password1": self.new_password,
+            "new_password2": self.new_password,
+        }
+        data.update(overrides)
+        return data
+
+    def test_anonymous_get_and_post_require_login(self):
+        self.client.logout()
+        before = list(User.objects.order_by("pk").values())
+        for url in (self.url, self.password_url):
+            for method in (self.client.get, self.client.post):
+                with self.subTest(url=url, method=method.__name__):
+                    self.assertRedirects(method(url), reverse("accounts:login") + "?next=" + url)
+        self.assertEqual(list(User.objects.order_by("pk").values()), before)
+
+    def test_mypage_displays_profile_and_links(self):
+        response = self.client.get(self.url)
+        self.assertTemplateUsed(response, "accounts/mypage.html")
+        self.assertContains(response, "未設定", count=3)
+        self.assertContains(response, self.user.username)
+        self.assertContains(response, reverse("reservations:reservation_list"))
+        self.assertContains(response, self.password_url)
+        self.assertEqual(tuple(response.context["form"].fields), ("last_name", "first_name", "email"))
+        self.assertNotContains(response, 'name="username"')
+        self.assertContains(response, 'name="csrfmiddlewaretoken"')
+
+    def test_updates_optional_profile_and_accepts_duplicate_email(self):
+        response = self.client.post(self.url, self.profile_data(), follow=True)
+        self.assertRedirects(response, self.url)
+        self.assertContains(response, "プロフィールを更新しました。")
+        self.user.refresh_from_db()
+        self.assertEqual((self.user.last_name, self.user.first_name, self.user.email),
+                         ("山田", "太郎", "shared@example.com"))
+        for value in ("山田", "太郎", "shared@example.com"):
+            self.assertContains(response, value)
+        response = self.client.post(self.url, self.profile_data(last_name="", first_name="", email=""), follow=True)
+        self.assertContains(response, "未設定", count=3)
+        self.user.refresh_from_db()
+        self.assertEqual((self.user.last_name, self.user.first_name, self.user.email), ("", "", ""))
+
+    def test_invalid_profile_is_not_saved(self):
+        before = list(User.objects.order_by("pk").values())
+        for field, value in (("email", "invalid"), ("email", "a" * 255 + "@example.com"),
+                             ("last_name", "姓" * 151), ("first_name", "名" * 151)):
+            with self.subTest(field=field, value=value):
+                response = self.client.post(self.url, self.profile_data(**{field: value}))
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(field, response.context["form"].errors)
+                self.assertContains(response, "errorlist")
+                self.assertEqual(response.context["form"][field].value(), value)
+                self.assertEqual(list(User.objects.order_by("pk").values()), before)
+
+    def test_profile_email_error_uses_server_validation_and_preserves_input(self):
+        from django.contrib.auth.forms import PasswordChangeForm
+        from django.forms import EmailField
+
+        response = self.client.get(self.url)
+        self.assertContains(
+            response,
+            f'<form class="auth-form" method="post" action="{self.url}" novalidate>',
+        )
+        self.assertIsInstance(response.context["form"].fields["email"], EmailField)
+        self.assertFalse(response.context["form"].fields["email"].required)
+        before = list(User.objects.order_by("pk").values())
+        response = self.client.post(self.url, self.profile_data(email="invalid-address"))
+        self.assertEqual(response.status_code, 200)
+        form = response.context["form"]
+        self.assertEqual(form.errors["email"], ["正しいメールアドレスの形式で入力してください。"])
+        self.assertEqual(form.errors.as_data()["email"][0].code, "invalid")
+        self.assertContains(response, str(form["email"].errors), html=True)
+        self.assertContains(response, str(form["email"]), html=True)
+        self.assertContains(response, 'value="invalid-address"')
+        self.assertEqual(list(User.objects.order_by("pk").values()), before)
+        self.assertIsInstance(self.client.get(self.password_url).context["form"], PasswordChangeForm)
+        self.assertNotContains(self.client.get(self.password_url), "novalidate")
+        self.client.logout()
+        for name in ("signup", "login"):
+            self.assertNotContains(self.client.get(reverse(f"accounts:{name}")), "novalidate")
+
+    def test_extra_parameters_cannot_change_owner_credentials_or_permissions(self):
+        before_other = User.objects.values().get(pk=self.other.pk)
+        before_password = self.user.password
+        reservations = list(Reservation.objects.order_by("pk").values())
+        restaurants = list(Restaurant.objects.order_by("pk").values())
+        data = self.profile_data(
+            user_id=self.other.pk, pk=self.other.pk, id=self.other.pk, user=self.other.pk,
+            username="hacked", password="plaintext", is_staff="true", is_superuser="true",
+            is_active="false", groups="1", user_permissions="1",
+        )
+        self.assertRedirects(self.client.post(self.url, data), self.url)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.username, "member")
+        self.assertEqual(self.user.password, before_password)
+        self.assertFalse(self.user.is_staff)
+        self.assertFalse(self.user.is_superuser)
+        self.assertTrue(self.user.is_active)
+        self.assertFalse(self.user.groups.exists())
+        self.assertFalse(self.user.user_permissions.exists())
+        self.assertEqual(User.objects.values().get(pk=self.other.pk), before_other)
+        self.assertEqual(list(Reservation.objects.order_by("pk").values()), reservations)
+        self.assertEqual(list(Restaurant.objects.order_by("pk").values()), restaurants)
+
+    def test_password_form_is_standard(self):
+        from django.contrib.auth.forms import PasswordChangeForm
+        response = self.client.get(self.password_url)
+        self.assertTemplateUsed(response, "accounts/password_change.html")
+        self.assertIsInstance(response.context["form"], PasswordChangeForm)
+        for field in ("old_password", "new_password1", "new_password2", "csrfmiddlewaretoken"):
+            self.assertContains(response, f'name="{field}"')
+
+    def test_invalid_password_change_does_not_save(self):
+        before = list(User.objects.order_by("pk").values())
+        cases = [
+            ({"old_password": "wrong"}, "old_password"),
+            ({"new_password2": "mismatch"}, "new_password2"),
+            ({"new_password1": "123", "new_password2": "123"}, "new_password2"),
+        ]
+        for overrides, field in cases:
+            with self.subTest(overrides=overrides):
+                response = self.client.post(self.password_url, self.password_data(**overrides))
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(field, response.context["form"].errors)
+                self.assertEqual(list(User.objects.order_by("pk").values()), before)
+                self.assertEqual(self.client.get(self.url).status_code, 200)
+
+    def test_password_change_preserves_session_and_existing_data(self):
+        other = User.objects.values().get(pk=self.other.pk)
+        profile = (self.user.username, self.user.last_name, self.user.first_name, self.user.email)
+        reservations = list(Reservation.objects.order_by("pk").values())
+        restaurants = list(Restaurant.objects.order_by("pk").values())
+        response = self.client.post(
+            self.password_url, self.password_data(user_id=self.other.pk, username="hacked"), follow=True,
+        )
+        self.assertRedirects(response, self.url)
+        self.assertContains(response, "パスワードを変更しました。")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(self.new_password))
+        self.assertFalse(self.user.check_password(self.password))
+        self.assertNotEqual(self.user.password, self.new_password)
+        self.assertEqual(self.client.session["_auth_user_id"], str(self.user.pk))
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+        response = self.client.get(reverse("reservations:reservation_list"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["reservations"].values_list("user_id", flat=True)), [self.user.pk])
+        self.assertEqual((self.user.username, self.user.last_name, self.user.first_name, self.user.email), profile)
+        self.assertEqual(User.objects.values().get(pk=self.other.pk), other)
+        self.assertEqual(list(Reservation.objects.order_by("pk").values()), reservations)
+        self.assertEqual(list(Restaurant.objects.order_by("pk").values()), restaurants)
+        client = Client()
+        self.assertFalse(client.login(username="member", password=self.password))
+        self.assertTrue(client.login(username="member", password=self.new_password))
+
+    def test_profile_and_password_posts_require_valid_csrf(self):
+        for url, data in ((self.url, self.profile_data()), (self.password_url, self.password_data())):
+            with self.subTest(url=url):
+                client = Client(enforce_csrf_checks=True)
+                client.force_login(self.user)
+                client.get(url)
+                before = list(User.objects.order_by("pk").values())
+                self.assertEqual(client.post(url, data).status_code, 403)
+                self.assertEqual(client.post(url, dict(data, csrfmiddlewaretoken="invalid")).status_code, 403)
+                self.assertEqual(list(User.objects.order_by("pk").values()), before)
+                data["csrfmiddlewaretoken"] = client.cookies["csrftoken"].value
+                self.assertRedirects(client.post(url, data), self.url)
+
+    def test_get_does_not_update_and_other_methods_are_rejected(self):
+        before = list(User.objects.order_by("pk").values())
+        for url in (self.url, self.password_url):
+            self.assertEqual(self.client.get(url, self.profile_data()).status_code, 200)
+            for method in (self.client.put, self.client.patch, self.client.delete):
+                self.assertEqual(method(url).status_code, 405)
+        self.assertEqual(list(User.objects.order_by("pk").values()), before)
+
+    def test_header_mypage_link_only_for_authenticated_users(self):
+        link = f'<a href="{self.url}">マイページ</a>'
+        for url in (reverse("home"), reverse("reservations:restaurant_list")):
+            self.assertContains(self.client.get(url), link, html=True)
+        self.client.logout()
+        for url in (reverse("home"), reverse("reservations:restaurant_list")):
+            self.assertNotContains(self.client.get(url), link, html=True)
