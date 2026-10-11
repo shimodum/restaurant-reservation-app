@@ -1,0 +1,15 @@
+<section aria-label="店舗への問い合わせ案内">
+  {% if restaurant.max_party_size >= 1 %}
+    <p>オンライン予約は1予約あたり{{ restaurant.max_party_size }}名までです。{{ restaurant.max_party_size }}名を超える場合のご利用については、店舗へのお問い合わせが必要です。</p>
+  {% endif %}
+  {% with phone=restaurant.phone_number_tel %}
+    {% if phone %}
+      <p>店舗へ電話でお問い合わせください。電話：<a href="tel:{{ phone }}">{{ restaurant.phone_number }}</a></p>
+    {% elif restaurant.phone_number %}
+      <p>このページの店舗の電話番号は不正なため、電話リンクを表示できません。</p>
+    {% else %}
+      <p>このページには店舗の電話番号が登録されていません。</p>
+    {% endif %}
+  {% endwith %}
+  <p class="supplementary">電話でのお問い合わせのみでは予約は確定しません。受付可否・予約手続きは店舗にご確認ください。</p>
+</section>

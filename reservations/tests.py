@@ -30,6 +30,28 @@ class RestaurantModelTests(TestCase):
         data.update(overrides)
         return Restaurant(**data)
 
+    def test_phone_number_valid_formats_preserve_display(self):
+        for number in ("", "0312345678", "03-1234-5678", "09012345678", "090-1234-5678",
+                       "0-9-0-1-2-3-4-5-6-7-8"):
+            with self.subTest(number=number):
+                restaurant = self.restaurant(phone_number=number)
+                restaurant.full_clean()
+                self.assertEqual(restaurant.phone_number, number)
+                self.assertEqual(restaurant.phone_number_tel, number.replace("-", ""))
+        self.assertEqual(self.restaurant().phone_number, "")
+
+    def test_invalid_phone_numbers_are_rejected_and_have_no_link(self):
+        for number in ("123456789", "123456789012", "-0312345678", "0312345678-",
+                       "03--1234-5678", "03a12345678", "０３１２３４５６７８", " 0312345678",
+                       "0312345678 ", "03 12345678", "0312345678\n", "+81312345678",
+                       "03(1234)5678", "03\t12345678"):
+            with self.subTest(number=number):
+                restaurant = self.restaurant(phone_number=number)
+                with self.assertRaises(ValidationError) as caught:
+                    restaurant.full_clean()
+                self.assertIn("phone_number", caught.exception.message_dict)
+                self.assertEqual(restaurant.phone_number_tel, "")
+
     def test_booking_defaults_and_valid_settings(self):
         restaurant = self.restaurant()
         restaurant.full_clean()
@@ -246,7 +268,7 @@ class RestaurantAdminTests(TestCase):
         self.assertIsInstance(model_admin, RestaurantAdmin)
         self.assertEqual(
             model_admin.list_display,
-            ("name", "address", "opening_time", "last_reservation_time",
+            ("name", "address", "phone_number", "opening_time", "last_reservation_time",
              "closing_time", "max_party_size", "business_hours"),
         )
         self.assertEqual(model_admin.search_fields, ("name", "address"))
@@ -262,6 +284,26 @@ class RestaurantAdminTests(TestCase):
         self.assertEqual(changelist_response.status_code, 200)
         self.assertEqual(add_response.status_code, 200)
 
+
+    def test_admin_can_set_change_clear_phone_and_reject_whitespace(self):
+        self.client.force_login(self.superuser)
+        url = reverse("admin:reservations_restaurant_add")
+        data = dict(name="電話食堂", description="説明", address="東京", business_hours="補足",
+                    max_party_size="10", phone_number="03-1234-5678", _save="保存")
+        self.assertContains(self.client.get(url), 'name="phone_number"')
+        for number in (" 0312345678", "0312345678 ", " ", "03--1234-5678", "abcdefghij"):
+            response = self.client.post(url, {**data, "phone_number": number})
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("phone_number", response.context["adminform"].form.errors)
+            self.assertFalse(Restaurant.objects.exists())
+        self.assertEqual(self.client.post(url, data).status_code, 302)
+        restaurant = Restaurant.objects.get()
+        self.assertEqual(restaurant.phone_number, "03-1234-5678")
+        change = reverse("admin:reservations_restaurant_change", args=[restaurant.pk])
+        for number in ("090-1234-5678", ""):
+            self.assertEqual(self.client.post(change, {**data, "phone_number": number}).status_code, 302)
+            restaurant.refresh_from_db()
+            self.assertEqual(restaurant.phone_number, number)
 
     def test_admin_saves_rules_and_rejects_invalid_settings(self):
         self.client.force_login(self.superuser)
@@ -420,7 +462,7 @@ class ReservationTests(TestCase):
     def test_reservation_errors_display_user_friendly_messages(self):
         cases = [
             ("party_size", "0", "人数は1人以上を指定してください。"),
-            ("party_size", "11", "人数は10人以下を指定してください。"),
+            ("party_size", "11", "人数は10人以下を指定してください。 上限を超える人数でのご利用は、下記の問い合わせ案内をご確認ください。"),
             ("party_size", "", "人数を入力してください。"),
             ("reserved_at", "", "予約日時を入力してください。"),
             ("reserved_at", "2030-01-09T12:00", "予約日時は未来の日時を指定してください。"),
@@ -659,6 +701,57 @@ class ReservationTests(TestCase):
         self.assertIn(notice, response.context["form"].non_field_errors())
         self.assertFalse(Reservation.objects.exists())
 
+    def test_contact_display_on_both_pages_and_when_booking_stopped(self):
+        detail = reverse("reservations:restaurant_detail", args=[self.restaurant.pk])
+        for maximum in (1, 20):
+            for number in ("", "03-1234-5678", "invalid"):
+                self.restaurant.max_party_size = maximum
+                self.restaurant.phone_number = number
+                self.restaurant.save()
+                for url in (detail, self.create_url):
+                    response = self.client.get(url)
+                    self.assertContains(response, f"{maximum}名を超える場合")
+                    self.assertContains(response, "お問い合わせのみでは予約は確定しません")
+                    if number == "03-1234-5678":
+                        self.assertContains(response, '<a href="tel:0312345678">03-1234-5678</a>', html=True)
+                    else:
+                        self.assertNotContains(response, "tel:")
+                        self.assertContains(response, "登録されていません" if not number else "電話リンクを表示できません")
+        self.restaurant.phone_number = "03-1234-5678"
+        for opening, last, closing, maximum in ((None, None, None, 10),
+                                               (time(11, 1), time(11, 2), time(12), 10),
+                                               (time(11), time(19), time(20), 0)):
+            self.restaurant.opening_time, self.restaurant.last_reservation_time = opening, last
+            self.restaurant.closing_time, self.restaurant.max_party_size = closing, maximum
+            self.restaurant.save()
+            for url in (detail, self.create_url):
+                response = self.client.get(url)
+                self.assertContains(response, 'href="tel:0312345678"')
+                self.assertNotContains(response, "オンライン予約は1予約あたり0名")
+
+    def test_party_size_error_keeps_input_and_contact_without_saving(self):
+        for number in ("", "03-1234-5678"):
+            for maximum in (1, 10, 20):
+                self.restaurant.phone_number = number
+                self.restaurant.max_party_size = maximum
+                self.restaurant.save()
+                data = self.data(reserved_at="2030-01-11T12:30", party_size=str(maximum + 1))
+                response = self.client.post(self.create_url, data)
+                self.assertEqual(response.status_code, 200)
+                self.assertFalse(Reservation.objects.exists())
+                form = response.context["form"]
+                self.assertEqual(form.errors.as_data()["party_size"][0].code, "max_value")
+                self.assertContains(response, f"人数は{maximum}人以下を指定してください。")
+                self.assertContains(response, "下記の問い合わせ案内をご確認ください")
+                for key, value in data.items():
+                    self.assertEqual(form.data[key], value)
+                self.assertContains(response, '<option value="12:30" selected>12:30</option>', html=True)
+                if number:
+                    self.assertContains(response, 'href="tel:0312345678"')
+                else:
+                    self.assertNotContains(response, "tel:")
+                    self.assertContains(response, "登録されていません")
+
     def test_party_size_uses_restaurant_limit_and_dynamic_display(self):
         for maximum, sizes in ((20, ((1, True), (20, True), (21, False))),
                                (1, ((1, True), (2, False)))):
@@ -856,7 +949,41 @@ class BookingRulesMigrationTests(TransactionTestCase):
             self.assertIsNone(migrated.last_reservation_time)
             self.assertIsNone(migrated.closing_time)
             self.assertEqual(migrated.max_party_size, 10)
+            self.assertEqual(migrated.phone_number, "")
             self.assertEqual(list(Reservation.objects.values()), old_reservations)
             self.assertEqual(Reservation.objects.get(pk=reservation.pk).restaurant_id, restaurant.pk)
+        finally:
+            MigrationExecutor(connection).migrate(latest)
+
+
+class PhoneNumberMigrationTests(TransactionTestCase):
+    def test_existing_configured_restaurants_users_and_history_are_preserved(self):
+        executor = MigrationExecutor(connection)
+        latest = executor.loader.graph.leaf_nodes()
+        previous = [("reservations", "0003_restaurant_booking_rules")]
+        try:
+            executor.migrate(previous)
+            apps = executor.loader.project_state(previous).apps
+            User = apps.get_model("auth", "User")
+            OldRestaurant = apps.get_model("reservations", "Restaurant")
+            OldReservation = apps.get_model("reservations", "Reservation")
+            user = User.objects.create(username="phone-migration-member")
+            for name in ("既存食堂", "【デモ】まちの食堂"):
+                restaurant = OldRestaurant.objects.create(name=name, description="[seed_demo:v1]\n説明",
+                    address="東京", business_hours="L.O. 21:30", opening_time=time(11),
+                    last_reservation_time=time(21), closing_time=time(22), max_party_size=20)
+                for status in ("confirmed", "cancelled"):
+                    OldReservation.objects.create(user=user, restaurant=restaurant,
+                        reserved_at=datetime(2030, 1, 11, 12, 15, tzinfo=ZoneInfo("Asia/Tokyo")),
+                        party_size=12, status=status)
+            fields = [field.name for field in OldRestaurant._meta.fields]
+            before = list(OldRestaurant.objects.order_by("pk").values(*fields))
+            reservations = list(OldReservation.objects.order_by("pk").values())
+            users = list(User.objects.order_by("pk").values())
+            MigrationExecutor(connection).migrate(latest)
+            self.assertEqual(list(Restaurant.objects.order_by("pk").values(*fields)), before)
+            self.assertEqual(list(Restaurant.objects.values_list("phone_number", flat=True)), ["", ""])
+            self.assertEqual(list(Reservation.objects.order_by("pk").values()), reservations)
+            self.assertEqual(list(get_user_model().objects.order_by("pk").values()), users)
         finally:
             MigrationExecutor(connection).migrate(latest)

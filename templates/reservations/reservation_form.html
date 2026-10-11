@@ -20,6 +20,7 @@
     <p>店舗の予約設定が未完了または不正のため、現在予約を受け付けていません。</p>
     {{ form.non_field_errors }}
   {% endif %}
+  {% include "reservations/_reservation_contact.html" %}
   <p><a href="{% url 'reservations:restaurant_detail' restaurant.pk %}">店舗詳細へ戻る</a></p>
 </section>
 {% endblock %}

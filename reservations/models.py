@@ -1,14 +1,25 @@
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.validators import MaxValueValidator, MinValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models
 from django.utils import timezone
+
+
+phone_number_validator = RegexValidator(
+    regex=r"\A(?=(?:-?[0-9]){10,11}\Z)[0-9]+(?:-[0-9]+)*\Z",
+    message="電話番号は半角数字10〜11桁で入力してください。ハイフンは数字の間に1つだけ使用できます。",
+)
 
 
 class Restaurant(models.Model):
     name = models.CharField("店名", max_length=100)
     description = models.TextField("説明")
     address = models.CharField("住所", max_length=255)
+    phone_number = models.CharField(
+        "電話番号", max_length=21, blank=True, default="",
+        validators=[phone_number_validator],
+        help_text="国内電話番号・半角数字10〜11桁。ハイフン任意。空白は使用できません。未登録でもオンライン予約できます。",
+    )
     business_hours = models.TextField(
         "営業時間の補足案内", help_text="L.O.などの案内文です。予約可否の判定には使用しません。"
     )
@@ -34,6 +45,16 @@ class Restaurant(models.Model):
 
     def __str__(self):
         return self.name
+
+    @property
+    def phone_number_tel(self):
+        if not self.phone_number:
+            return ""
+        try:
+            phone_number_validator(self.phone_number)
+        except ValidationError:
+            return ""
+        return self.phone_number.replace("-", "")
 
     @property
     def can_accept_reservations(self):

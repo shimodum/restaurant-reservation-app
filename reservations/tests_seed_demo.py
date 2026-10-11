@@ -35,6 +35,7 @@ class SeedDemoTests(TestCase):
                 "【デモ】駅前レストラン": "東京都新宿区（架空の店舗）",
             })
             for restaurant in Restaurant.objects.all():
+                self.assertEqual(restaurant.phone_number, "")
                 restaurant.full_clean()
                 self.assertTrue(restaurant.can_accept_reservations)
             for username in ("demo_user1", "demo_user2"):
@@ -64,6 +65,7 @@ class SeedDemoTests(TestCase):
         reservation.status = "cancelled"
         reservation.save()
         restaurant = Restaurant.objects.first()
+        restaurant.phone_number = "03-1234-5678"
         restaurant.max_party_size = 5
         restaurant.address = "東京都（デモ用の架空住所）"
         restaurant.save()

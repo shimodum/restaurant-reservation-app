@@ -84,7 +84,15 @@ class ReservationForm(forms.ModelForm):
 
     def clean_party_size(self):
         party_size = self.cleaned_data["party_size"]
-        validate_reservation_party_size(self.restaurant, party_size)
+        try:
+            validate_reservation_party_size(self.restaurant, party_size)
+        except forms.ValidationError as error:
+            if error.code != "max_value":
+                raise
+            raise forms.ValidationError(
+                f"{error.message} 上限を超える人数でのご利用は、下記の問い合わせ案内をご確認ください。",
+                code="max_value",
+            ) from error
         return party_size
 
     def clean(self):

@@ -170,6 +170,24 @@ class ReservationAPITests(TestCase):
                 self.assertEqual(response.status_code, 201 if allowed else 400)
                 self.assertEqual(Reservation.objects.count(), before + int(allowed))
 
+    def test_phone_number_does_not_change_api_contract(self):
+        for number in ("", "03-1234-5678"):
+            self.restaurant.phone_number = number
+            self.restaurant.save()
+            before = Reservation.objects.count()
+            response = self.post(party_size=11)
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json(), {"party_size": ["人数は10人以下を指定してください。"]})
+            self.assertEqual(response.data["party_size"][0].code, "max_value")
+            self.assertEqual(Reservation.objects.count(), before)
+            response = self.post(party_size=10, phone_number="09012345678")
+            self.assertEqual(response.status_code, 201)
+            fields = {"id", "restaurant", "reserved_at", "party_size", "status", "created_at"}
+            self.assertEqual(set(response.json()), fields)
+            self.assertTrue(all(set(item) == fields for item in self.client.get(self.url).json()))
+            self.restaurant.refresh_from_db()
+            self.assertEqual(self.restaurant.phone_number, number)
+
     def test_party_size_follows_selected_restaurant(self):
         other = Restaurant.objects.create(name="別店", description="説明", address="東京",
             business_hours="補足", opening_time=time(17), last_reservation_time=time(20),
