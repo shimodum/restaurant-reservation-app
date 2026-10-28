@@ -810,6 +810,31 @@ class ReservationTests(TestCase):
                                 self.assertContains(response, "電話番号が登録されていません")
                 self.assertEqual(Restaurant.objects.filter(pk=self.restaurant.pk).values().get(), before)
 
+    def test_phone_label_and_detail_placement_without_duplicate_contact(self):
+        self.restaurant.name = "【デモ】まちの食堂"
+        self.restaurant.description = "[seed_demo:v1]\n説明"
+        for number, value in (
+            ("", "03-XXXX-XXXX（デモ用・発信不可）"),
+            ("03-1234-5678", '<a href="tel:0312345678">03-1234-5678</a>'),
+            ("invalid", "このページの店舗の電話番号は不正なため、電話リンクを表示できません。"),
+        ):
+            self.restaurant.phone_number = number
+            self.restaurant.save()
+            detail = self.client.get(reverse("reservations:restaurant_detail", args=[self.restaurant.pk]))
+            content = detail.content.decode()
+            inside, outside = content.split("</article>", 1)
+            self.assertIn("<dt>電話番号</dt>", inside)
+            self.assertNotIn("<dt>電話番号</dt>", outside)
+            self.assertNotIn(value, outside)
+            self.assertLess(inside.index("営業時間の補足案内"), inside.index("<dt>電話番号</dt>"))
+            self.assertIn("名を超える場合は", outside)
+            for response in (detail, self.client.get(self.create_url),
+                             self.client.post(self.create_url, self.data(party_size="11"))):
+                self.assertContains(response, f"<dt>電話番号</dt><dd>{value}</dd>", count=1, html=True)
+                if not number:
+                    self.assertContains(response, "※ この店舗は架空店舗のため、実際のお問い合わせはできません。", count=1)
+            self.assertFalse(Reservation.objects.exists())
+
     def test_demo_contact_requires_both_name_and_exact_leading_marker(self):
         for name, description in (
             ("【デモ】まちの食堂", "普通の説明"),

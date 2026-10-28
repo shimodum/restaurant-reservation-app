@@ -2,7 +2,11 @@
   {% if restaurant.max_party_size >= 1 %}
     <p>オンライン予約は1予約あたり{{ restaurant.max_party_size }}名までです。{{ restaurant.max_party_size }}名を超える場合は、店舗への直接のお問い合わせが必要です。</p>
   {% endif %}
-  {% include "reservations/_restaurant_phone.html" %}
+  {% if not hide_phone %}
+    <dl>
+      {% include "reservations/_restaurant_phone.html" %}
+    </dl>
+  {% endif %}
   {% if is_demo_restaurant and not restaurant.phone_number %}
     <p class="supplementary">※ この店舗は架空店舗のため、実際のお問い合わせはできません。</p>
   {% else %}

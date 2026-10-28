@@ -1,13 +1,14 @@
-{% if compact %}<dt>電話番号</dt><dd>{% else %}<p>{% endif %}
+<dt>電話番号</dt>
+<dd>
 {% with phone=restaurant.phone_number_tel %}
   {% if phone %}
-    {% if not compact %}店舗へ電話でお問い合わせください。電話：{% endif %}<a href="tel:{{ phone }}">{{ restaurant.phone_number }}</a>
+    <a href="tel:{{ phone }}">{{ restaurant.phone_number }}</a>
   {% elif restaurant.phone_number %}
     このページの店舗の電話番号は不正なため、電話リンクを表示できません。
   {% elif is_demo_restaurant %}
-    {% if not compact %}電話番号：{% endif %}03-XXXX-XXXX（デモ用・発信不可）
+    03-XXXX-XXXX（デモ用・発信不可）
   {% else %}
     このページには店舗の電話番号が登録されていません。
   {% endif %}
 {% endwith %}
-{% if compact %}</dd>{% else %}</p>{% endif %}
+</dd>
