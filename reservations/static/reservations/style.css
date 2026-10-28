@@ -116,6 +116,10 @@ h2 {
   flex-direction: column;
 }
 
+.restaurant-grid--restaurants .restaurant-card > dl {
+  margin-bottom: 0.5rem;
+}
+
 .restaurant-grid--restaurants .restaurant-card > .button:last-child {
   margin-top: auto;
   align-self: flex-start;

@@ -8,18 +8,27 @@ from .models import Reservation, Restaurant
 from .validators import reservation_time_choices
 
 
+DEMO_RESTAURANT_IMAGES = {
+    "【デモ】まちの食堂": "reservations/images/demo-diner.jpg",
+    "【デモ】駅前レストラン": "reservations/images/demo-restaurant.jpg",
+}
+
+
+def _is_demo_restaurant(restaurant):
+    return (restaurant.name in DEMO_RESTAURANT_IMAGES
+            and restaurant.description.startswith("[seed_demo:v1]\n"))
+
+
 def _restaurant_image_path(restaurant):
-    if not restaurant.description.startswith("[seed_demo:v1]\n"):
+    if not _is_demo_restaurant(restaurant):
         return ""
-    return {
-        "【デモ】まちの食堂": "reservations/images/demo-diner.jpg",
-        "【デモ】駅前レストラン": "reservations/images/demo-restaurant.jpg",
-    }.get(restaurant.name, "")
+    return DEMO_RESTAURANT_IMAGES[restaurant.name]
 
 
 def restaurant_list(request):
     restaurants = Restaurant.objects.all()
     for restaurant in restaurants:
+        restaurant.is_demo = _is_demo_restaurant(restaurant)
         restaurant.image_static_path = _restaurant_image_path(restaurant)
     return render(
         request,
@@ -35,6 +44,7 @@ def restaurant_detail(request, pk):
         "reservations/restaurant_detail.html",
         {
             "restaurant": restaurant,
+            "is_demo_restaurant": _is_demo_restaurant(restaurant),
             "restaurant_description": restaurant.description.removeprefix("[seed_demo:v1]\n"),
             "restaurant_image": _restaurant_image_path(restaurant),
         },
@@ -60,6 +70,7 @@ def reservation_create(request, pk):
         "reservations/reservation_form.html",
         {
             "restaurant": restaurant,
+            "is_demo_restaurant": _is_demo_restaurant(restaurant),
             "form": form,
             "has_reservation_times": bool(reservation_time_choices(restaurant)),
         },

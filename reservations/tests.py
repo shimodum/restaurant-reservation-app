@@ -285,13 +285,13 @@ class RestaurantAdminTests(TestCase):
         self.assertEqual(add_response.status_code, 200)
 
 
-    def test_admin_can_set_change_clear_phone_and_reject_whitespace(self):
+    def test_admin_can_set_change_phone_and_reject_empty_or_invalid_values(self):
         self.client.force_login(self.superuser)
         url = reverse("admin:reservations_restaurant_add")
         data = dict(name="電話食堂", description="説明", address="東京", business_hours="補足",
                     max_party_size="10", phone_number="03-1234-5678", _save="保存")
         self.assertContains(self.client.get(url), 'name="phone_number"')
-        for number in (" 0312345678", "0312345678 ", " ", "03--1234-5678", "abcdefghij"):
+        for number in ("", " 0312345678", "0312345678 ", " ", "03--1234-5678", "abcdefghij"):
             response = self.client.post(url, {**data, "phone_number": number})
             self.assertEqual(response.status_code, 200)
             self.assertIn("phone_number", response.context["adminform"].form.errors)
@@ -300,17 +300,45 @@ class RestaurantAdminTests(TestCase):
         restaurant = Restaurant.objects.get()
         self.assertEqual(restaurant.phone_number, "03-1234-5678")
         change = reverse("admin:reservations_restaurant_change", args=[restaurant.pk])
-        for number in ("090-1234-5678", ""):
+        for number in ("090-1234-5678", "0312345678"):
             self.assertEqual(self.client.post(change, {**data, "phone_number": number}).status_code, 302)
             restaurant.refresh_from_db()
             self.assertEqual(restaurant.phone_number, number)
+
+    def test_admin_requires_phone_for_existing_restaurant_without_changing_data(self):
+        self.client.force_login(self.superuser)
+        restaurant = Restaurant.objects.create(
+            name="既存食堂", description="説明", address="東京", business_hours="補足",
+        )
+        url = reverse("admin:reservations_restaurant_change", args=[restaurant.pk])
+        before = Restaurant.objects.filter(pk=restaurant.pk).values().get()
+        response = self.client.get(url)
+        field = response.context["adminform"].form.fields["phone_number"]
+        self.assertTrue(field.required)
+        self.assertContains(response, "実際に使用権限のある電話番号を登録してください。")
+        self.assertContains(response, "実在する番号への誤発信につながる可能性があります。")
+        self.assertEqual(Restaurant.objects.filter(pk=restaurant.pk).values().get(), before)
+        data = dict(name="変更名", description="説明", address="東京", business_hours="補足",
+                    max_party_size="10", phone_number="", _save="保存")
+        for phone in ("", "03-XXXX-XXXX"):
+            response = self.client.post(url, {**data, "phone_number": phone})
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("phone_number", response.context["adminform"].form.errors)
+            self.assertEqual(Restaurant.objects.filter(pk=restaurant.pk).values().get(), before)
+        self.assertEqual(self.client.post(url, {**data, "phone_number": "03-1234-5678"}).status_code, 302)
+        restaurant.refresh_from_db()
+        self.assertEqual(restaurant.phone_number, "03-1234-5678")
+        self.assertEqual(restaurant.name, "変更名")
+        saved = Restaurant.objects.filter(pk=restaurant.pk).values().get()
+        self.assertEqual(self.client.post(url, data).status_code, 200)
+        self.assertEqual(Restaurant.objects.filter(pk=restaurant.pk).values().get(), saved)
 
     def test_admin_saves_rules_and_rejects_invalid_settings(self):
         self.client.force_login(self.superuser)
         url = reverse("admin:reservations_restaurant_add")
         data = dict(name="管理食堂", description="説明", address="東京都", business_hours="L.O. 21:30",
                     opening_time="11:00", last_reservation_time="21:00", closing_time="22:00",
-                    max_party_size="20", _save="保存")
+                    max_party_size="20", phone_number="03-1234-5678", _save="保存")
         response = self.client.get(url)
         for field in ("opening_time", "last_reservation_time", "closing_time", "max_party_size"):
             self.assertContains(response, f'name="{field}"')
@@ -710,7 +738,7 @@ class ReservationTests(TestCase):
                 self.restaurant.save()
                 for url in (detail, self.create_url):
                     response = self.client.get(url)
-                    self.assertContains(response, f"{maximum}名を超える場合")
+                    self.assertContains(response, f"オンライン予約は1予約あたり{maximum}名までです。{maximum}名を超える場合は、店舗への直接のお問い合わせが必要です。")
                     self.assertContains(response, "お問い合わせのみでは予約は確定しません")
                     if number == "03-1234-5678":
                         self.assertContains(response, '<a href="tel:0312345678">03-1234-5678</a>', html=True)
@@ -751,6 +779,93 @@ class ReservationTests(TestCase):
                 else:
                     self.assertNotContains(response, "tel:")
                     self.assertContains(response, "登録されていません")
+
+    def test_phone_display_priority_on_all_three_pages(self):
+        urls = (reverse("reservations:restaurant_list"),
+                reverse("reservations:restaurant_detail", args=[self.restaurant.pk]), self.create_url)
+        for name in ("【デモ】まちの食堂", "【デモ】駅前レストラン", "通常店舗"):
+            for number in ("", "03-1234-5678", "invalid"):
+                self.restaurant.name = name
+                self.restaurant.description = "[seed_demo:v1]\n説明"
+                self.restaurant.phone_number = number
+                self.restaurant.save()
+                before = Restaurant.objects.filter(pk=self.restaurant.pk).values().get()
+                for url in urls:
+                    with self.subTest(name=name, number=number, url=url):
+                        response = self.client.get(url)
+                        demo_empty = name != "通常店舗" and not number
+                        if demo_empty:
+                            self.assertContains(response, "03-XXXX-XXXX（デモ用・発信不可）")
+                            self.assertNotContains(response, "※ デモ用の架空番号です。実際に電話をかけることはできません。")
+                        else:
+                            self.assertNotContains(response, "03-XXXX-XXXX")
+                            self.assertNotContains(response, "デモ用の架空番号です")
+                        if number == "03-1234-5678":
+                            self.assertContains(response, '<a href="tel:0312345678">03-1234-5678</a>', html=True)
+                        else:
+                            self.assertNotContains(response, "tel:")
+                            if number:
+                                self.assertContains(response, "電話番号は不正なため")
+                            elif not demo_empty:
+                                self.assertContains(response, "電話番号が登録されていません")
+                self.assertEqual(Restaurant.objects.filter(pk=self.restaurant.pk).values().get(), before)
+
+    def test_demo_contact_requires_both_name_and_exact_leading_marker(self):
+        for name, description in (
+            ("【デモ】まちの食堂", "普通の説明"),
+            ("通常店舗", "[seed_demo:v1]\n説明"),
+            ("【デモ】まちの食堂", "説明\n[seed_demo:v1]\n"),
+            ("【デモ】駅前レストラン", "[seed_demo:v1]\r\n説明"),
+        ):
+            self.restaurant.name, self.restaurant.description = name, description
+            self.restaurant.save()
+            for url in (reverse("reservations:restaurant_list"),
+                        reverse("reservations:restaurant_detail", args=[self.restaurant.pk]), self.create_url):
+                with self.subTest(name=name, description=description, url=url):
+                    response = self.client.get(url)
+                    self.assertNotContains(response, "03-XXXX-XXXX")
+                    self.assertContains(response, "電話番号が登録されていません")
+
+    def test_demo_party_size_error_keeps_contact_and_does_not_save(self):
+        for name, maximum in (("【デモ】まちの食堂", 10), ("【デモ】駅前レストラン", 20)):
+            self.restaurant.name = name
+            self.restaurant.description = "[seed_demo:v1]\n説明"
+            self.restaurant.max_party_size = maximum
+            self.restaurant.save()
+            for number in ("", "03-1234-5678", "invalid"):
+                self.restaurant.phone_number = number
+                self.restaurant.save()
+                before = Reservation.objects.count()
+                data = self.data(party_size=str(maximum + 1))
+                response = self.client.post(self.create_url, data)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(Reservation.objects.count(), before)
+                self.assertContains(response, f"人数は{maximum}人以下を指定してください。")
+                for key, value in data.items():
+                    self.assertEqual(response.context["form"].data[key], value)
+                self.assertContains(response, "03-XXXX-XXXX（デモ用・発信不可）" if not number else
+                                    ("tel:0312345678" if number != "invalid" else "電話番号は不正なため"))
+                if not number:
+                    self.assertNotContains(response, "※ デモ用の架空番号です。実際に電話をかけることはできません。")
+                    self.assertContains(response, "※ この店舗は架空店舗のため、実際のお問い合わせはできません。", count=1)
+                    self.assertNotContains(response, "tel:")
+                    self.assertNotContains(response, "受付可否・予約手続きは店舗にご確認ください")
+                self.restaurant.refresh_from_db()
+                self.assertEqual(self.restaurant.phone_number, number)
+
+    def test_demo_contact_remains_when_booking_unavailable(self):
+        self.restaurant.name = "【デモ】まちの食堂"
+        self.restaurant.description = "[seed_demo:v1]\n説明"
+        for opening, last, closing in ((None, None, None), (time(11, 1), time(11, 2), time(12))):
+            self.restaurant.opening_time = opening
+            self.restaurant.last_reservation_time = last
+            self.restaurant.closing_time = closing
+            self.restaurant.save()
+            for url in (reverse("reservations:restaurant_list"),
+                        reverse("reservations:restaurant_detail", args=[self.restaurant.pk]), self.create_url):
+                response = self.client.get(url)
+                self.assertContains(response, "03-XXXX-XXXX（デモ用・発信不可）")
+                self.assertNotContains(response, "tel:")
 
     def test_party_size_uses_restaurant_limit_and_dynamic_display(self):
         for maximum, sizes in ((20, ((1, True), (20, True), (21, False))),

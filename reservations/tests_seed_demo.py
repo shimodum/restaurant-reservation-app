@@ -56,6 +56,25 @@ class SeedDemoTests(TestCase):
                     self.assertLessEqual(row.party_size, row.restaurant.max_party_size)
                 self.assertTrue(next(row for row in rows if row.status == "confirmed").can_cancel)
 
+    def test_seeded_restaurants_show_demo_contact_without_database_changes(self):
+        self.seed()
+        self.client.force_login(get_user_model().objects.get(username="demo_user1"))
+        before = self.snapshot()
+        response = self.client.get(reverse("reservations:restaurant_list"), HTTP_HOST="localhost")
+        self.assertContains(response, "03-XXXX-XXXX（デモ用・発信不可）", count=2)
+        self.assertNotContains(response, "tel:")
+        self.assertContains(response, '<dt>電話番号</dt><dd>03-XXXX-XXXX（デモ用・発信不可）</dd>', count=2, html=True)
+        self.assertNotContains(response, "実際のお問い合わせはできません")
+        self.assertNotContains(response, "実際に電話をかけることはできません")
+        for restaurant in Restaurant.objects.all():
+            for view in ("restaurant_detail", "reservation_create"):
+                response = self.client.get(reverse(f"reservations:{view}", args=[restaurant.pk]),
+                                           HTTP_HOST="localhost")
+                self.assertContains(response, "03-XXXX-XXXX（デモ用・発信不可）")
+                self.assertNotContains(response, "※ デモ用の架空番号です。実際に電話をかけることはできません。")
+                self.assertNotContains(response, "tel:")
+        self.assertEqual(self.snapshot(), before)
+
     def test_rerun_preserves_every_row_and_user_changes(self):
         self.seed()
         user = get_user_model().objects.get(username="demo_user1")

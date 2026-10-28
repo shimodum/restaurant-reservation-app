@@ -274,6 +274,20 @@ class MyPageTests(TestCase):
         self.assertNotContains(response, 'name="username"')
         self.assertContains(response, 'name="csrfmiddlewaretoken"')
 
+    def test_only_mypage_hides_header_username(self):
+        for response in (self.client.get(self.url),
+                         self.client.post(self.url, self.profile_data(email="invalid"))):
+            self.assertNotContains(response, 'class="nav-username"')
+            self.assertContains(response, f"<dd>{self.user.username}</dd>", html=True)
+            self.assertContains(response, reverse("accounts:logout"))
+        for url in (reverse("home"), reverse("reservations:restaurant_list"),
+                    reverse("reservations:restaurant_detail", args=[self.restaurant.pk]),
+                    reverse("reservations:reservation_create", args=[self.restaurant.pk]),
+                    reverse("reservations:reservation_list"), self.password_url):
+            with self.subTest(url=url):
+                self.assertContains(self.client.get(url),
+                                    f'<span class="nav-username">{self.user.username}</span>', html=True)
+
     def test_updates_optional_profile_and_accepts_duplicate_email(self):
         response = self.client.post(self.url, self.profile_data(), follow=True)
         self.assertRedirects(response, self.url)

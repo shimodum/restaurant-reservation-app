@@ -22,6 +22,7 @@
           <dd>1予約あたり{{ restaurant.max_party_size }}人まで</dd>
           <dt>営業時間の補足案内</dt>
           <dd>{{ restaurant.business_hours|linebreaksbr }}</dd>
+          {% include "reservations/_restaurant_phone.html" with is_demo_restaurant=restaurant.is_demo compact=True %}
         </dl>
         {% if not restaurant.can_accept_reservations %}
           <p>店舗の予約設定が未完了または不正のため、現在予約を受け付けていません。</p>
